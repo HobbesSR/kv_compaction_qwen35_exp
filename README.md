@@ -54,6 +54,11 @@ This repo has the first real Qwen3.5 substrate in place:
 - query coreset extraction
 - key selection
 - beta fitting
+- native Qwen3.5 smoke-eval runner
+
+Model-backed Qwen3.5 commands still require the dedicated Qwen3.5 environment.
+In the default workspace env, those commands fail fast with a clear dependency
+message instead of a raw Transformers stack trace.
 
 The current validated artifact still lives in `clean_repo/` for Qwen2.5. The
 job here is to build the analogous Qwen3.5 lane without coupling the two

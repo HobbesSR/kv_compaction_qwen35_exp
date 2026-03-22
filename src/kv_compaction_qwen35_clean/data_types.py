@@ -371,3 +371,81 @@ class BetaFitComparison:
 
     def to_serializable(self) -> dict[str, object]:
         return asdict(self)
+
+
+@dataclass
+class FactExpectation:
+    label: str
+    keywords: list[str]
+    central: bool = True
+
+
+@dataclass
+class BehavioralPrompt:
+    label: str
+    category: str
+    prompt_text: str
+    required_facts: list[FactExpectation]
+    forbidden_markers: list[str]
+    target_head_labels: list[str]
+
+
+@dataclass
+class BehavioralRunResult:
+    label: str
+    category: str
+    prompt_text: str
+    target_head_labels: list[str]
+    generated_text: str
+    success: bool
+    runtime_seconds: float
+    keyword_hits: int
+    keyword_total: int
+    keyword_recall: float
+    required_fact_labels_hit: list[str]
+    missing_required_fact_labels: list[str]
+    central_fact_labels_hit: list[str]
+    missing_central_fact_labels: list[str]
+    central_detail_preserved: bool
+    omitted_central_detail: bool
+    hallucination_flags: list[str]
+    reference_missing_fact_labels: list[str]
+    reference_extra_fact_labels: list[str]
+    divergence_summary: str
+    reference_unigram_f1: float | None
+
+
+@dataclass
+class BehavioralPathResult:
+    path: str
+    keys_per_head: int
+    compaction_succeeded: bool
+    compacted_head_count: int
+    compacted_prefix_tokens: int
+    effective_compact_tokens: int
+    runtime_seconds: float
+    preserved_central_detail_count: int
+    omitted_central_detail_count: int
+    hallucination_run_count: int
+    runs: list[BehavioralRunResult]
+    compacted_heads: list[dict[str, object]]
+
+
+@dataclass
+class BehavioralEvalResult:
+    sample_id: str
+    boundary_id: str
+    prompt_set: str
+    keys_per_head: int
+    key_selection_method: str
+    train_fraction: float
+    beta_solver: str
+    beta_regularization_strength: float
+    value_regularization_strength: float
+    prompt_labels: list[str]
+    reference: BehavioralPathResult
+    sketch: BehavioralPathResult
+    control: BehavioralPathResult
+
+    def to_serializable(self) -> dict[str, object]:
+        return asdict(self)

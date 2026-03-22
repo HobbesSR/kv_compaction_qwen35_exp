@@ -16,6 +16,9 @@ PROBE_HEADS = (0, 3, 7)
 QWEN35_MODEL_CLASS_MAP: dict[str, tuple[str, str]] = {
     "qwen3_5": ("transformers.models.qwen3_5.modeling_qwen3_5", "Qwen3_5ForCausalLM"),
 }
+QWEN35_MODELING_MODULES: dict[str, str] = {
+    "qwen3_5": "transformers.models.qwen3_5.modeling_qwen3_5",
+}
 
 
 @dataclass(frozen=True)
@@ -94,6 +97,25 @@ def materialize_long_context_ids(
         spans.append((start, len(token_ids), turn.turn_id, turn.speaker))
 
     return token_ids, spans
+
+
+def build_qwen35_prompt_ids(
+    tokenizer,
+    *,
+    prompt_text: str,
+    enable_thinking: bool | None = None,
+) -> list[int]:
+    if hasattr(tokenizer, "apply_chat_template"):
+        rendered = tokenizer.apply_chat_template(
+            [{"role": "user", "content": prompt_text}],
+            tokenize=True,
+            add_generation_prompt=True,
+            enable_thinking=enable_thinking,
+        )
+        if isinstance(rendered, list):
+            return [int(token_id) for token_id in rendered]
+    prompt = f"USER [behavior_eval]\n{prompt_text}\n\nASSISTANT [behavior_answer]\n"
+    return tokenizer.encode(prompt, add_special_tokens=False)
 
 
 def _build_load_kwargs(config: SmokeTestConfig) -> dict[str, Any]:

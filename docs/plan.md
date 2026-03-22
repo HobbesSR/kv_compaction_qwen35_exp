@@ -44,11 +44,12 @@ Completed:
 - boundary bundle substrate
 - prototype bank / coreset substrate
 - key selection and runtime-fit substrate
+- first native smoke-eval runner
 
 Next:
 
-- native prompt surface and baseline floor
 - smoke evaluation
+- validated local Qwen3.5 run in the dedicated environment
 
 ## Explicit Non-Goals
 
