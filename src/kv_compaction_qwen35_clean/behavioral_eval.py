@@ -38,7 +38,7 @@ from kv_compaction_qwen35_clean.runtime_compaction import (
 
 
 MAX_NEW_TOKENS = 64
-DEFAULT_PROMPT_SET = "qwen35_calibration_v2"
+DEFAULT_PROMPT_SET = "qwen35_calibration_v3"
 
 
 def _build_qwen35_warehouse_prompts() -> list[BehavioralPrompt]:
@@ -127,6 +127,12 @@ PROMPT_SET_LABELS = {
         "qwen35_branch_switch_harness_note",
         "qwen35_branch_switch_appendix_details",
     ],
+    "qwen35_calibration_v3": [
+        "qwen35_same_task_status_triplet",
+        "qwen35_same_task_handoff_rollback",
+        "qwen35_branch_switch_harness_note",
+        "qwen35_branch_switch_appendix_details",
+    ],
 }
 
 QWEN35_PROMPT_PARAPHRASES = {
@@ -170,6 +176,22 @@ QWEN35_PROMPT_PARAPHRASES_V2 = {
     ),
 }
 
+QWEN35_PROMPT_PARAPHRASES_V3 = {
+    "qwen35_same_task_status_triplet": (
+        "Answer with exactly three short bullets and nothing else. "
+        "Use wording copied from the context where possible. "
+        "Bullet 1: the cutover window. "
+        "Bullet 2: the required check before live traffic. "
+        "Bullet 3: the current blocker."
+    ),
+    "qwen35_same_task_handoff_rollback": (
+        "Answer with exactly two short bullets and nothing else. "
+        "Use wording copied from the context where possible. "
+        "Bullet 1: the operator handoff focus. "
+        "Bullet 2: the rollback sequence if only dock three rolls back."
+    ),
+}
+
 
 def build_prompt_set(prompt_set: str = DEFAULT_PROMPT_SET, prompt_family: str = "warehouse_migration_qwen35") -> list[BehavioralPrompt]:
     if prompt_family != "warehouse_migration_qwen35":
@@ -186,6 +208,8 @@ def build_prompt_set(prompt_set: str = DEFAULT_PROMPT_SET, prompt_family: str = 
             prompt = replace(prompt, prompt_text=QWEN35_PROMPT_PARAPHRASES[label])
         elif prompt_set == "qwen35_calibration_v2" and label in QWEN35_PROMPT_PARAPHRASES_V2:
             prompt = replace(prompt, prompt_text=QWEN35_PROMPT_PARAPHRASES_V2[label])
+        elif prompt_set == "qwen35_calibration_v3" and label in QWEN35_PROMPT_PARAPHRASES_V3:
+            prompt = replace(prompt, prompt_text=QWEN35_PROMPT_PARAPHRASES_V3[label])
         prompts.append(prompt)
     return prompts
 

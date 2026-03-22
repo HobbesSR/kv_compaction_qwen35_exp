@@ -76,12 +76,13 @@ implementation surfaces.
 On the current validated local `Qwen3.5-9B` run:
 
 - reference: `4/4` central details, `0` hallucination runs
-- sketch: `3/4` central details, `0` hallucination runs
-- control: `3/4` central details, `0` hallucination runs
+- sketch: `2/4` central details, `0` hallucination runs
+- control: `4/4` central details, `0` hallucination runs
 
 That means the native Qwen3.5 smoke surface is now calibrated above floor and
 the compaction protocol works end to end on the model family. The remaining
-gap is that sketch does not yet beat the explicit control path on this lane.
+gap is sharper than before: on the cleaner non-contaminating prompt surface,
+the explicit control path matches reference while sketch drops to `2/4`.
 
 ## Installed Commands
 

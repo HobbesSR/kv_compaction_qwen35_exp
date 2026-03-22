@@ -102,8 +102,8 @@ The repo currently prefers:
 ## Current Limits
 
 The current demonstrated run does not yet show sketch beating the explicit
-control path. On the validated Qwen3.5-9B run, sketch and control both land at
-`3/4` while reference lands at `4/4`.
+control path. On the validated Qwen3.5-9B run, control matches reference at
+`4/4` while sketch drops to `2/4`.
 
 This repo also does not package the research repo's separate low-overhead live
 generation observer result. The public story here is narrower:

@@ -36,22 +36,22 @@ kv-qwen35-smoke
 
 Output artifact:
 
-- `artifacts/qwen35_smoke/behavioral_eval_qwen35_calibration_v2_k6_t40.json`
+- `artifacts/qwen35_smoke/behavioral_eval_qwen35_calibration_v3_k6_t40.json`
 
 Current observed local summary on the default `Qwen/Qwen3.5-9B` config:
 
 - reference:
-  - runtime: `51.145611s`
+  - runtime: `54.250728s`
   - central details preserved: `4/4`
   - hallucination runs: `0`
 - sketch:
-  - runtime: `45.145773s`
-  - central details preserved: `3/4`
+  - runtime: `44.006578s`
+  - central details preserved: `2/4`
   - hallucination runs: `0`
   - effective compact tokens: `96`
 - control:
-  - runtime: `44.972305s`
-  - central details preserved: `3/4`
+  - runtime: `46.302045s`
+  - central details preserved: `4/4`
   - hallucination runs: `0`
   - effective compact tokens: `96`
 
