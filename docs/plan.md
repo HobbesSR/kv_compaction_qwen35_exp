@@ -42,11 +42,12 @@ Completed:
 - scaffold and contract
 - runtime/model bring-up
 - boundary bundle substrate
+- prototype bank / coreset substrate
 
 Next:
 
 - native prompt surface and baseline floor
-- prototype bank / coreset
+- key selection and runtime fit
 
 ## Explicit Non-Goals
 

@@ -193,6 +193,33 @@ class FeatureHarvest:
 
 
 @dataclass
+class QueryCoresetEntry:
+    coreset_id: str
+    prototype_id: str
+    layer: int
+    head: int
+    weight: float
+    avg_prefix_mass_share: float
+    avg_raw_prefix_mass: float
+    query_projection: list[float]
+    output_projection_hint: list[float]
+    last_token_index: int
+
+
+@dataclass
+class QueryCoreset:
+    sample_id: str
+    boundary_id: str
+    source: str
+    max_entries: int
+    selected_entries: list[QueryCoresetEntry]
+    total_weight: float
+
+    def to_serializable(self) -> dict[str, object]:
+        return asdict(self)
+
+
+@dataclass
 class QuerySample:
     query_id: str
     layer: int
