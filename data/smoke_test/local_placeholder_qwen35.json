@@ -1,0 +1,60 @@
+{
+  "samples": [
+    {
+      "sample_id": "local_qwen35_smoke_v0",
+      "source": "hand_authored_local",
+      "task_label": "warehouse_migration_qwen35",
+      "prompt_family": "warehouse_migration_qwen35",
+      "turns": [
+        {
+          "turn_id": "turn_0",
+          "speaker": "system",
+          "token_count": 512,
+          "content": "You are coordinating a warehouse migration review. Preserve factual details, blockers, appendix notes, and handoff state."
+        },
+        {
+          "turn_id": "turn_1",
+          "speaker": "tool",
+          "token_count": 1024,
+          "content": "Rollout summary: the cutover window remains Saturday overnight. Live traffic cannot start until the firmware validation pass is green. The current blocker is delayed harness certification for dock three."
+        },
+        {
+          "turn_id": "turn_2",
+          "speaker": "tool",
+          "token_count": 1024,
+          "content": "Operator handoff: keep the handoff checklist visible. If only dock three rolls back, the rollback order cascades through dock two and then dock one. Controller replacement stays phased."
+        },
+        {
+          "turn_id": "turn_3",
+          "speaker": "assistant",
+          "token_count": 768,
+          "content": "Working note: the rollout remains phased and the dry-run-to-live gate depends on firmware validation, harness certification, and operator confirmation."
+        },
+        {
+          "turn_id": "turn_4",
+          "speaker": "tool",
+          "token_count": 1280,
+          "content": "Late appendix: dock three uses the different relay harness. Supplier phone numbers, cage inventory, and shift lead names are recorded in the appendix. The hardware note is easy to miss if the team only follows the rollout checklist."
+        },
+        {
+          "turn_id": "turn_5",
+          "speaker": "user",
+          "token_count": 896,
+          "content": "Keep moving on the migration review and preserve the appendix details even if the main focus stays on rollout execution."
+        },
+        {
+          "turn_id": "turn_6",
+          "speaker": "assistant",
+          "token_count": 1408,
+          "content": "Current thread: emphasize blockers, handoff continuity, the phased controller replacement, and the late appendix details tied to dock three."
+        },
+        {
+          "turn_id": "turn_7",
+          "speaker": "tool",
+          "token_count": 1280,
+          "content": "Cross-check note: docks one and two share the standard harness, but dock three differs. The appendix retains supplier phone numbers, cage inventory, and shift lead names alongside that relay harness note."
+        }
+      ]
+    }
+  ]
+}
