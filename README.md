@@ -52,6 +52,8 @@ This repo has the first real Qwen3.5 substrate in place:
 - teacher-forced boundary collection
 - prototype bank state extraction
 - query coreset extraction
+- key selection
+- beta fitting
 
 The current validated artifact still lives in `clean_repo/` for Qwen2.5. The
 job here is to build the analogous Qwen3.5 lane without coupling the two

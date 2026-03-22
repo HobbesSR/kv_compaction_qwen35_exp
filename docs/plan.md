@@ -43,11 +43,12 @@ Completed:
 - runtime/model bring-up
 - boundary bundle substrate
 - prototype bank / coreset substrate
+- key selection and runtime-fit substrate
 
 Next:
 
 - native prompt surface and baseline floor
-- key selection and runtime fit
+- smoke evaluation
 
 ## Explicit Non-Goals
 
