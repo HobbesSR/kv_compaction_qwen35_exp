@@ -35,6 +35,19 @@ model family.
 7. smoke evaluation
 8. service demo shell
 
+## Current Progress
+
+Completed:
+
+- scaffold and contract
+- runtime/model bring-up
+- boundary bundle substrate
+
+Next:
+
+- native prompt surface and baseline floor
+- prototype bank / coreset
+
 ## Explicit Non-Goals
 
 - no forced reuse of the Qwen2.5 prompt ecology

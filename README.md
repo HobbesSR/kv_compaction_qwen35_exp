@@ -45,8 +45,14 @@ branch. It is a parallel story with shared protocol and separate calibration.
 
 ## Current State
 
-This repo starts as a scaffold. The current validated artifact still lives in
-`clean_repo/` for Qwen2.5. The job here is to build the analogous Qwen3.5 lane
-without coupling the two implementation surfaces.
+This repo has the first real Qwen3.5 substrate in place:
+
+- config and context loading
+- runtime planning
+- teacher-forced boundary collection
+
+The current validated artifact still lives in `clean_repo/` for Qwen2.5. The
+job here is to build the analogous Qwen3.5 lane without coupling the two
+implementation surfaces.
 
 See [docs/plan.md](./docs/plan.md) and [docs/repo_contract.md](./docs/repo_contract.md).

@@ -157,3 +157,76 @@ class LoadedContextSample:
 
     def to_serializable(self) -> dict[str, object]:
         return asdict(self)
+
+
+@dataclass
+class FeatureObservation:
+    token_index: int
+    layer: int
+    head: int
+    tap_point: str
+    query_projection: list[float]
+    prefix_mass_share: float
+    raw_prefix_mass: float
+    output_projection: list[float]
+    source_turn_id: str = ""
+    source_speaker: str = ""
+
+
+@dataclass
+class FeatureHarvest:
+    sample_id: str
+    boundary_id: str
+    logical_context_tokens: int
+    physical_context_tokens: int
+    feature_granularity: str
+    tap_point: str
+    query_projection_dim: int
+    output_projection_dim: int
+    observed_layers: list[int]
+    observed_heads: list[int]
+    observation_count: int
+    observations: list[FeatureObservation]
+
+    def to_serializable(self) -> dict[str, object]:
+        return asdict(self)
+
+
+@dataclass
+class QuerySample:
+    query_id: str
+    layer: int
+    head: int
+    token_index: int
+    prefix_mass_share: float
+    raw_prefix_mass: float
+    query_projection: list[float]
+    raw_query_vector: list[float]
+    source_turn_id: str
+    source_speaker: str
+
+
+@dataclass
+class QuerySampleBank:
+    sample_id: str
+    boundary_id: str
+    query_dim: int
+    sample_count: int
+    samples: list[QuerySample]
+
+    def to_serializable(self) -> dict[str, object]:
+        return asdict(self)
+
+
+@dataclass
+class BoundaryCollection:
+    harvest: FeatureHarvest
+    query_bank: QuerySampleBank
+    boundary_keys: dict[tuple[int, int], list[list[float]]]
+    boundary_values: dict[tuple[int, int], list[list[float]]]
+    boundary_projected_values: dict[tuple[int, int], list[list[float]]]
+    output_targets: dict[tuple[int, int, int], list[float]]
+    runtime_cache: object | None = None
+    capture_token_indices: list[int] | None = None
+    monitored_observation_count: int | None = None
+    monitored_query_sample_count: int | None = None

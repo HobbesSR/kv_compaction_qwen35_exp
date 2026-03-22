@@ -11,6 +11,8 @@ from typing import Any
 from kv_compaction_qwen35_clean.data_types import LoadedContextSample, SmokeTestConfig
 
 
+PROBE_LAYERS = (4, 12, 20, 28)
+PROBE_HEADS = (0, 3, 7)
 QWEN35_MODEL_CLASS_MAP: dict[str, tuple[str, str]] = {
     "qwen3_5": ("transformers.models.qwen3_5.modeling_qwen3_5", "Qwen3_5ForCausalLM"),
 }
@@ -67,6 +69,31 @@ def build_teacher_forced_transcript(sample: LoadedContextSample) -> str:
         role = _normalize_role(turn.speaker).upper()
         blocks.append(f"{role} [{turn.turn_id}]\n{turn.content}")
     return "\n\n".join(blocks)
+
+
+def materialize_long_context_ids(
+    sample: LoadedContextSample,
+    tokenizer,
+) -> tuple[list[int], list[tuple[int, int, str, str]]]:
+    token_ids: list[int] = []
+    spans: list[tuple[int, int, str, str]] = []
+
+    for turn in sample.turns:
+        role = _normalize_role(turn.speaker).upper()
+        base_ids = tokenizer.encode(
+            f"{role} [{turn.turn_id}]\n{turn.content}\n\n",
+            add_special_tokens=False,
+        )
+        if not base_ids:
+            raise ValueError(f"Tokenizer produced no ids for turn {turn.turn_id}.")
+
+        repeat_count = (turn.token_count + len(base_ids) - 1) // len(base_ids)
+        materialized = (base_ids * repeat_count)[: turn.token_count]
+        start = len(token_ids)
+        token_ids.extend(materialized)
+        spans.append((start, len(token_ids), turn.turn_id, turn.speaker))
+
+    return token_ids, spans
 
 
 def _build_load_kwargs(config: SmokeTestConfig) -> dict[str, Any]:
@@ -145,12 +172,24 @@ def load_qwen35_bundle(config: SmokeTestConfig):
         trust_remote_code=config.model.trust_remote_code,
         local_files_only=config.model.local_files_only,
     )
-    model_type = resolve_qwen35_model_type(
-        config.model.huggingface_id,
-        trust_remote_code=config.model.trust_remote_code,
-        local_files_only=config.model.local_files_only,
-    )
+    try:
+        model_type = resolve_qwen35_model_type(
+            config.model.huggingface_id,
+            trust_remote_code=config.model.trust_remote_code,
+            local_files_only=config.model.local_files_only,
+        )
+    except Exception:
+        model_type = _fallback_model_type_from_huggingface_id(config.model.huggingface_id)
     module_name, class_name = QWEN35_MODEL_CLASS_MAP[model_type]
+    try:
+        module_spec = find_spec(module_name)
+    except ModuleNotFoundError:
+        module_spec = None
+    if module_spec is None:
+        raise RuntimeError(
+            "The current Transformers installation does not expose the Qwen3.5 model class. "
+            "Use the dedicated Qwen3.5 environment before running model-backed commands."
+        )
     model_cls = getattr(import_module(module_name), class_name)
     model = model_cls.from_pretrained(
         config.model.huggingface_id,
@@ -160,6 +199,25 @@ def load_qwen35_bundle(config: SmokeTestConfig):
     model.eval()
     model = model.to(config.model.device)
     return model, tokenizer, model_type
+
+
+def default_probe_layers_for_model(model, model_type: str) -> tuple[int, ...]:
+    if model_type == "qwen3_5":
+        base_model = getattr(model, "model", None)
+        if base_model is not None and hasattr(base_model, "layers"):
+            full_attention_layers = tuple(
+                idx
+                for idx, layer in enumerate(base_model.layers)
+                if getattr(layer, "layer_type", None) == "full_attention"
+            )
+            if full_attention_layers:
+                return full_attention_layers
+    return PROBE_LAYERS
+
+
+def default_probe_heads_for_model(model) -> tuple[int, ...]:
+    max_head_count = int(getattr(model.config, "num_attention_heads", len(PROBE_HEADS)))
+    return tuple(head for head in PROBE_HEADS if head < max_head_count)
 
 
 def unload_qwen35_bundle(model) -> None:

@@ -1,0 +1,599 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from kv_compaction_qwen35_clean.data_types import (
+    BoundaryCollection,
+    FeatureHarvest,
+    FeatureObservation,
+    LoadedContextSample,
+    QuerySample,
+    QuerySampleBank,
+    SmokeTestConfig,
+)
+from kv_compaction_qwen35_clean.model_runtime import (
+    default_probe_heads_for_model,
+    default_probe_layers_for_model,
+    load_qwen35_bundle,
+    materialize_long_context_ids,
+    unload_qwen35_bundle,
+)
+
+
+LONG_CONTEXT_TOKEN_STRIDE = 256
+CAPTURE_ATTENTION_CHUNK_SIZE = 32
+
+
+def _serialize_pair_map(mapping: dict[tuple[int, int], list[list[float]]]) -> list[dict[str, object]]:
+    return [
+        {"layer": int(layer), "head": int(head), "rows": rows}
+        for (layer, head), rows in sorted(mapping.items())
+    ]
+
+
+def _deserialize_pair_map(rows: list[dict[str, object]]) -> dict[tuple[int, int], list[list[float]]]:
+    return {
+        (int(row["layer"]), int(row["head"])): [list(vector) for vector in row["rows"]]
+        for row in rows
+    }
+
+
+def _serialize_output_targets(
+    output_targets: dict[tuple[int, int, int], list[float]],
+) -> list[dict[str, object]]:
+    return [
+        {
+            "layer": int(layer),
+            "head": int(head),
+            "token_index": int(token_index),
+            "value": value,
+        }
+        for (layer, head, token_index), value in sorted(output_targets.items())
+    ]
+
+
+def _deserialize_output_targets(rows: list[dict[str, object]]) -> dict[tuple[int, int, int], list[float]]:
+    return {
+        (int(row["layer"]), int(row["head"]), int(row["token_index"])): list(row["value"])
+        for row in rows
+    }
+
+
+def write_boundary_collection(bundle: BoundaryCollection, output_path: Path) -> Path:
+    if bundle.runtime_cache is not None:
+        raise ValueError("BoundaryCollection with runtime_cache cannot be serialized.")
+    payload = {
+        "harvest": bundle.harvest.to_serializable(),
+        "query_bank": bundle.query_bank.to_serializable(),
+        "boundary_keys": _serialize_pair_map(bundle.boundary_keys),
+        "boundary_values": _serialize_pair_map(bundle.boundary_values),
+        "boundary_projected_values": _serialize_pair_map(bundle.boundary_projected_values),
+        "output_targets": _serialize_output_targets(bundle.output_targets),
+        "runtime_cache_retained": False,
+        "capture_token_indices": list(bundle.capture_token_indices or []),
+        "monitored_observation_count": bundle.monitored_observation_count,
+        "monitored_query_sample_count": bundle.monitored_query_sample_count,
+    }
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return output_path
+
+
+def load_boundary_collection(path: Path) -> BoundaryCollection:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if payload.get("runtime_cache_retained"):
+        raise ValueError("Serialized boundary collection unexpectedly retained a runtime cache.")
+    harvest_payload = payload["harvest"]
+    query_bank_payload = payload["query_bank"]
+    return BoundaryCollection(
+        harvest=FeatureHarvest(
+            sample_id=str(harvest_payload["sample_id"]),
+            boundary_id=str(harvest_payload["boundary_id"]),
+            logical_context_tokens=int(harvest_payload["logical_context_tokens"]),
+            physical_context_tokens=int(harvest_payload["physical_context_tokens"]),
+            feature_granularity=str(harvest_payload["feature_granularity"]),
+            tap_point=str(harvest_payload["tap_point"]),
+            query_projection_dim=int(harvest_payload["query_projection_dim"]),
+            output_projection_dim=int(harvest_payload["output_projection_dim"]),
+            observed_layers=[int(layer) for layer in harvest_payload["observed_layers"]],
+            observed_heads=[int(head) for head in harvest_payload["observed_heads"]],
+            observation_count=int(harvest_payload["observation_count"]),
+            observations=[FeatureObservation(**row) for row in harvest_payload["observations"]],
+        ),
+        query_bank=QuerySampleBank(
+            sample_id=str(query_bank_payload["sample_id"]),
+            boundary_id=str(query_bank_payload["boundary_id"]),
+            query_dim=int(query_bank_payload["query_dim"]),
+            sample_count=int(query_bank_payload["sample_count"]),
+            samples=[QuerySample(**row) for row in query_bank_payload["samples"]],
+        ),
+        boundary_keys=_deserialize_pair_map(payload["boundary_keys"]),
+        boundary_values=_deserialize_pair_map(payload["boundary_values"]),
+        boundary_projected_values=_deserialize_pair_map(payload["boundary_projected_values"]),
+        output_targets=_deserialize_output_targets(payload["output_targets"]),
+        runtime_cache=None,
+        capture_token_indices=[int(index) for index in payload.get("capture_token_indices", [])],
+        monitored_observation_count=(
+            int(payload["monitored_observation_count"])
+            if payload.get("monitored_observation_count") is not None
+            else None
+        ),
+        monitored_query_sample_count=(
+            int(payload["monitored_query_sample_count"])
+            if payload.get("monitored_query_sample_count") is not None
+            else None
+        ),
+    )
+
+
+def select_long_context_capture_indices(prefix_token_count: int, stride: int = LONG_CONTEXT_TOKEN_STRIDE) -> list[int]:
+    if prefix_token_count <= 1:
+        return []
+    indices = list(range(stride - 1, prefix_token_count, stride))
+    last_prefix_index = prefix_token_count - 1
+    if not indices or indices[-1] != last_prefix_index:
+        indices.append(last_prefix_index)
+    return indices
+
+
+def _capture_chunks(capture_indices: list[int], *, max_chunk_size: int) -> list[tuple[int, int]]:
+    if not capture_indices:
+        return []
+    chunks: list[tuple[int, int]] = []
+    chunk_start = int(capture_indices[0])
+    previous_index = int(capture_indices[0])
+    chunk_size = 1
+    for capture_index in capture_indices[1:]:
+        capture_index = int(capture_index)
+        if capture_index == previous_index + 1 and chunk_size < max_chunk_size:
+            previous_index = capture_index
+            chunk_size += 1
+            continue
+        chunks.append((chunk_start, previous_index + 1))
+        chunk_start = capture_index
+        previous_index = capture_index
+        chunk_size = 1
+    chunks.append((chunk_start, previous_index + 1))
+    return chunks
+
+
+def _resolve_probe_layer_heads(
+    probe_layers: tuple[int, ...],
+    probe_heads: tuple[int, ...],
+    probe_layer_heads: tuple[tuple[int, int], ...] | None,
+) -> dict[int, tuple[int, ...]]:
+    if probe_layer_heads is None:
+        return {int(layer): tuple(int(head) for head in probe_heads) for layer in probe_layers}
+    layer_to_heads: dict[int, list[int]] = {}
+    for layer, head in probe_layer_heads:
+        layer_to_heads.setdefault(int(layer), []).append(int(head))
+    return {layer: tuple(dict.fromkeys(heads)) for layer, heads in layer_to_heads.items()}
+
+
+def _attention_block_for_layer(model, layer_index: int):
+    base_model = getattr(model, "model", None)
+    if base_model is not None and hasattr(base_model, "layers"):
+        if not 0 <= int(layer_index) < len(base_model.layers):
+            return None
+        layer = base_model.layers[layer_index]
+        if hasattr(layer, "self_attn"):
+            return layer.self_attn
+        if hasattr(layer, "attn"):
+            return layer.attn
+        return None
+    raise ValueError("Unable to discover attention blocks for the loaded model.")
+
+
+def _attention_tensor_for_layer(model, attentions, layer_index: int):
+    if not attentions:
+        return None
+    base_model = getattr(model, "model", None)
+    if base_model is not None and hasattr(base_model, "layers"):
+        full_attention_layers = [
+            idx for idx, layer in enumerate(base_model.layers) if getattr(layer, "layer_type", None) == "full_attention"
+        ]
+        if len(attentions) == len(full_attention_layers):
+            if layer_index not in full_attention_layers:
+                return None
+            return attentions[full_attention_layers.index(layer_index)]
+        if layer_index < len(attentions):
+            return attentions[layer_index]
+    if layer_index >= len(attentions):
+        return None
+    return attentions[layer_index]
+
+
+def _cache_layer_count(cache) -> int:
+    layers = getattr(cache, "layers", None)
+    if layers is not None:
+        return len(layers)
+    key_cache = getattr(cache, "key_cache", None)
+    if key_cache is not None:
+        return len(key_cache)
+    try:
+        return len(cache)
+    except TypeError:
+        return 0
+
+
+def _cache_layer_key_value(cache, layer_index: int):
+    if cache is None:
+        return None
+    layers = getattr(cache, "layers", None)
+    if layers is not None:
+        if not 0 <= int(layer_index) < len(layers):
+            return None
+        layer = layers[layer_index]
+        keys = getattr(layer, "keys", None)
+        values = getattr(layer, "values", None)
+        if keys is None or values is None:
+            return None
+        return keys[0], values[0]
+    key_cache = getattr(cache, "key_cache", None)
+    value_cache = getattr(cache, "value_cache", None)
+    if key_cache is not None and value_cache is not None:
+        if not 0 <= int(layer_index) < len(key_cache):
+            return None
+        layer_key_cache = key_cache[layer_index]
+        layer_value_cache = value_cache[layer_index]
+        if layer_key_cache is None or layer_value_cache is None:
+            return None
+        return layer_key_cache[0], layer_value_cache[0]
+    return None
+
+
+def _projection_matrix(input_dim: int, output_dim: int, seed: int, device):
+    import torch
+
+    generator = torch.Generator(device=device)
+    generator.manual_seed(int(seed))
+    return torch.randn((input_dim, output_dim), generator=generator, device=device, dtype=torch.float32)
+
+
+def _rounded_tensor_rows_to_lists(tensor) -> list[list[float]]:
+    return [[round(float(value), 6) for value in row] for row in tensor.detach().cpu().tolist()]
+
+
+def _rounded_tensor_to_list(tensor) -> list[float]:
+    return [round(float(value), 6) for value in tensor.detach().cpu().tolist()]
+
+
+def _project_rows(vectors, output_dim: int, seed: int) -> list[list[float]]:
+    projected = vectors.float() @ _projection_matrix(vectors.shape[-1], output_dim, seed, vectors.device)
+    return _rounded_tensor_rows_to_lists(projected)
+
+
+def _project_vector(vector, output_dim: int, seed: int) -> list[float]:
+    projected = vector.float() @ _projection_matrix(vector.shape[-1], output_dim, seed, vector.device)
+    return _rounded_tensor_rows_to_lists(projected.unsqueeze(0))[0]
+
+
+def _attention_query_states(attention_block, layer_inputs, num_heads: int):
+    import torch
+
+    projected_queries = attention_block.q_proj(layer_inputs)
+    head_dim = int(getattr(attention_block, "head_dim", 0) or 0)
+    if head_dim > 0 and projected_queries.shape[-1] == num_heads * head_dim * 2:
+        query_states, _ = torch.chunk(
+            projected_queries.view(*projected_queries.shape[:-1], num_heads, head_dim * 2),
+            2,
+            dim=-1,
+        )
+        query_norm = getattr(attention_block, "q_norm", None)
+        if query_norm is not None:
+            query_states = query_norm(query_states)
+        return query_states
+    return projected_queries.view(*projected_queries.shape[:-1], num_heads, -1)
+
+
+def _turn_for_token_index(token_index: int, turn_spans: list[tuple[int, int, str, str]]) -> tuple[str, str]:
+    for start, end, turn_id, speaker in turn_spans:
+        if int(start) <= int(token_index) < int(end):
+            return str(turn_id), str(speaker)
+    if not turn_spans:
+        return "", ""
+    _, _, turn_id, speaker = turn_spans[-1]
+    return str(turn_id), str(speaker)
+
+
+def _build_capture_rows(
+    *,
+    model,
+    outputs,
+    token_index: int,
+    query_position: int,
+    config: SmokeTestConfig,
+    probe_head_map: dict[int, tuple[int, ...]],
+):
+    hidden_states = outputs.hidden_states or ()
+    attentions = outputs.attentions or ()
+    if not hidden_states or not attentions:
+        raise ValueError("Boundary capture outputs did not include hidden states and attentions.")
+    current_cache = outputs.past_key_values
+    if current_cache is None:
+        raise ValueError("Boundary capture outputs did not include an updated cache.")
+
+    import torch
+
+    num_heads = int(model.config.num_attention_heads)
+    num_key_value_heads = int(getattr(model.config, "num_key_value_heads", num_heads))
+    repeat_factor = max(1, num_heads // num_key_value_heads)
+    rows = []
+    for layer_index, layer_probe_heads in probe_head_map.items():
+        attention_block = _attention_block_for_layer(model, layer_index)
+        layer_attention_tensor = _attention_tensor_for_layer(model, attentions, layer_index)
+        if attention_block is None or layer_attention_tensor is None:
+            continue
+        max_head_index = layer_attention_tensor.shape[1] - 1
+        valid_heads = [head for head in layer_probe_heads if head <= max_head_index]
+        if not valid_heads:
+            continue
+
+        layer_inputs = hidden_states[layer_index][0, query_position].clone()
+        query_states = _attention_query_states(attention_block, layer_inputs, num_heads)
+        layer_attentions = layer_attention_tensor[0, :, query_position, :token_index]
+        cache_pair = _cache_layer_key_value(current_cache, layer_index)
+        if cache_pair is None:
+            continue
+        _, value_cache = cache_pair
+
+        head_index_tensor = torch.tensor(valid_heads, device=query_states.device, dtype=torch.long)
+        selected_query_states = query_states.index_select(0, head_index_tensor)
+        selected_attentions = layer_attentions.index_select(0, head_index_tensor)
+        prefix_mass_shares = selected_attentions.sum(dim=1)
+        valid_mask = prefix_mass_shares > 0.0
+        if not torch.any(valid_mask):
+            continue
+
+        head_index_tensor = head_index_tensor[valid_mask]
+        selected_query_states = selected_query_states[valid_mask]
+        selected_attentions = selected_attentions[valid_mask]
+        prefix_mass_shares = prefix_mass_shares[valid_mask]
+        kv_head_indices = torch.clamp(head_index_tensor // repeat_factor, max=num_key_value_heads - 1)
+        prefix_values = value_cache.index_select(0, kv_head_indices)[:, :token_index, :]
+        prefix_outputs = torch.bmm(selected_attentions.unsqueeze(1), prefix_values).squeeze(1)
+
+        for row_index in range(head_index_tensor.shape[0]):
+            layer = int(layer_index)
+            head = int(head_index_tensor[row_index].item())
+            raw_query = selected_query_states[row_index]
+            raw_output = prefix_outputs[row_index]
+            prefix_mass_share = round(float(prefix_mass_shares[row_index].item()), 6)
+            rows.append(
+                {
+                    "layer": layer,
+                    "head": head,
+                    "prefix_mass_share": prefix_mass_share,
+                    "raw_prefix_mass": round(float(token_index * prefix_mass_share), 6),
+                    "query_projection": _project_vector(
+                        raw_query,
+                        config.feature_schema.query_projection_dim,
+                        config.experiment.seed + layer,
+                    ),
+                    "raw_query_vector": _rounded_tensor_to_list(raw_query),
+                    "output_projection": _project_vector(
+                        raw_output,
+                        config.feature_schema.output_projection_dim,
+                        config.experiment.seed + 10_000 + layer,
+                    ),
+                    "raw_output": _rounded_tensor_to_list(raw_output),
+                }
+            )
+    return rows
+
+
+def collect_teacher_forced_boundary_collection(
+    sample: LoadedContextSample,
+    config: SmokeTestConfig,
+    *,
+    model=None,
+    tokenizer=None,
+    probe_layers: tuple[int, ...] | None = None,
+    probe_heads: tuple[int, ...] | None = None,
+    probe_layer_heads: tuple[tuple[int, int], ...] | None = None,
+    capture_indices: list[int] | None = None,
+    retain_runtime_cache: bool = False,
+    materialize_boundary_kv: bool = True,
+) -> BoundaryCollection:
+    created_model = False
+    model_type = "qwen3_5"
+    if model is None or tokenizer is None:
+        eager_config = config
+        model, tokenizer, model_type = load_qwen35_bundle(eager_config)
+        created_model = True
+    try:
+        layers = probe_layers or default_probe_layers_for_model(model, model_type)
+        heads = probe_heads or default_probe_heads_for_model(model)
+        return _collect_boundary_collection_with_model(
+            sample=sample,
+            config=config,
+            model=model,
+            tokenizer=tokenizer,
+            probe_layers=layers,
+            probe_heads=heads,
+            probe_layer_heads=probe_layer_heads,
+            capture_indices=capture_indices,
+            retain_runtime_cache=retain_runtime_cache,
+            materialize_boundary_kv=materialize_boundary_kv,
+        )
+    finally:
+        if created_model:
+            unload_qwen35_bundle(model)
+
+
+def _collect_boundary_collection_with_model(
+    *,
+    sample: LoadedContextSample,
+    config: SmokeTestConfig,
+    model,
+    tokenizer,
+    probe_layers: tuple[int, ...],
+    probe_heads: tuple[int, ...],
+    probe_layer_heads: tuple[tuple[int, int], ...] | None,
+    capture_indices: list[int] | None,
+    retain_runtime_cache: bool,
+    materialize_boundary_kv: bool,
+) -> BoundaryCollection:
+    import torch
+
+    token_ids, turn_spans = materialize_long_context_ids(sample, tokenizer)
+    prefix_token_count = int(sample.boundary.prefix_token_count)
+    full_input_ids = torch.tensor([token_ids[:prefix_token_count]], device=config.model.device, dtype=torch.long)
+    if capture_indices is None:
+        capture_indices = select_long_context_capture_indices(prefix_token_count)
+    capture_indices = sorted({int(index) for index in capture_indices if 0 <= int(index) < prefix_token_count})
+
+    observations: list[FeatureObservation] = []
+    query_samples: list[QuerySample] = []
+    output_targets: dict[tuple[int, int, int], list[float]] = {}
+    probe_head_map = _resolve_probe_layer_heads(probe_layers, probe_heads, probe_layer_heads)
+    past_key_values = None
+    processed_token_count = 0
+
+    for capture_start, capture_end in _capture_chunks(
+        capture_indices,
+        max_chunk_size=min(int(config.model.prefill_chunk_size), CAPTURE_ATTENTION_CHUNK_SIZE),
+    ):
+        while processed_token_count < capture_start:
+            chunk_end = min(capture_start, processed_token_count + int(config.model.prefill_chunk_size))
+            chunk_input_ids = full_input_ids[:, processed_token_count:chunk_end]
+            with torch.inference_mode():
+                bulk_outputs = model(
+                    input_ids=chunk_input_ids,
+                    past_key_values=past_key_values,
+                    use_cache=True,
+                    return_dict=True,
+                )
+            past_key_values = bulk_outputs.past_key_values
+            processed_token_count = chunk_end
+
+        capture_token_ids = full_input_ids[:, capture_start:capture_end]
+        with torch.inference_mode():
+            capture_outputs = model(
+                input_ids=capture_token_ids,
+                past_key_values=past_key_values,
+                use_cache=True,
+                return_dict=True,
+                output_hidden_states=True,
+                output_attentions=True,
+            )
+
+        for query_position, capture_index in enumerate(range(capture_start, capture_end)):
+            source_turn_id, source_speaker = _turn_for_token_index(capture_index, turn_spans)
+            for row in _build_capture_rows(
+                model=model,
+                outputs=capture_outputs,
+                token_index=capture_index,
+                query_position=query_position,
+                config=config,
+                probe_head_map=probe_head_map,
+            ):
+                observations.append(
+                    FeatureObservation(
+                        token_index=capture_index,
+                        layer=int(row["layer"]),
+                        head=int(row["head"]),
+                        tap_point=config.feature_schema.tap_point,
+                        query_projection=list(row["query_projection"]),
+                        prefix_mass_share=float(row["prefix_mass_share"]),
+                        raw_prefix_mass=float(row["raw_prefix_mass"]),
+                        output_projection=list(row["output_projection"]),
+                        source_turn_id=source_turn_id,
+                        source_speaker=source_speaker,
+                    )
+                )
+                query_samples.append(
+                    QuerySample(
+                        query_id=f"{sample.sample_id}:{row['layer']}:{row['head']}:{capture_index}",
+                        layer=int(row["layer"]),
+                        head=int(row["head"]),
+                        token_index=capture_index,
+                        prefix_mass_share=float(row["prefix_mass_share"]),
+                        raw_prefix_mass=float(row["raw_prefix_mass"]),
+                        query_projection=list(row["query_projection"]),
+                        raw_query_vector=list(row["raw_query_vector"]),
+                        source_turn_id=source_turn_id,
+                        source_speaker=source_speaker,
+                    )
+                )
+                output_targets[(int(row["layer"]), int(row["head"]), int(capture_index))] = list(row["raw_output"])
+
+        past_key_values = capture_outputs.past_key_values
+        processed_token_count = capture_end
+
+    while processed_token_count < prefix_token_count:
+        chunk_end = min(prefix_token_count, processed_token_count + int(config.model.prefill_chunk_size))
+        chunk_input_ids = full_input_ids[:, processed_token_count:chunk_end]
+        with torch.inference_mode():
+            bulk_outputs = model(
+                input_ids=chunk_input_ids,
+                past_key_values=past_key_values,
+                use_cache=True,
+                return_dict=True,
+            )
+        past_key_values = bulk_outputs.past_key_values
+        processed_token_count = chunk_end
+
+    if past_key_values is None:
+        raise ValueError("Boundary collection did not produce a final cache.")
+
+    num_heads = int(model.config.num_attention_heads)
+    num_key_value_heads = int(getattr(model.config, "num_key_value_heads", num_heads))
+    repeat_factor = max(1, num_heads // num_key_value_heads)
+    boundary_keys: dict[tuple[int, int], list[list[float]]] = {}
+    boundary_values: dict[tuple[int, int], list[list[float]]] = {}
+    boundary_projected_values: dict[tuple[int, int], list[list[float]]] = {}
+    if materialize_boundary_kv:
+        for layer_index, layer_probe_heads in probe_head_map.items():
+            if layer_index >= _cache_layer_count(past_key_values):
+                continue
+            cache_pair = _cache_layer_key_value(past_key_values, layer_index)
+            if cache_pair is None:
+                continue
+            key_cache, value_cache = cache_pair
+            for head_index in layer_probe_heads:
+                kv_head_index = min(num_key_value_heads - 1, int(head_index) // repeat_factor)
+                prefix_key_cache = key_cache[kv_head_index, :prefix_token_count, :]
+                prefix_value_cache = value_cache[kv_head_index, :prefix_token_count, :]
+                boundary_keys[(int(layer_index), int(head_index))] = _rounded_tensor_rows_to_lists(prefix_key_cache)
+                boundary_values[(int(layer_index), int(head_index))] = _rounded_tensor_rows_to_lists(prefix_value_cache)
+                boundary_projected_values[(int(layer_index), int(head_index))] = _project_rows(
+                    prefix_value_cache,
+                    config.feature_schema.output_projection_dim,
+                    config.experiment.seed + 10_000 + int(layer_index),
+                )
+
+    harvest = FeatureHarvest(
+        sample_id=sample.sample_id,
+        boundary_id=sample.boundary.boundary_id,
+        logical_context_tokens=prefix_token_count,
+        physical_context_tokens=prefix_token_count,
+        feature_granularity=config.feature_schema.granularity,
+        tap_point=config.feature_schema.tap_point,
+        query_projection_dim=config.feature_schema.query_projection_dim,
+        output_projection_dim=config.feature_schema.output_projection_dim,
+        observed_layers=sorted({int(observation.layer) for observation in observations}),
+        observed_heads=sorted({int(observation.head) for observation in observations}),
+        observation_count=len(observations),
+        observations=observations,
+    )
+    query_bank = QuerySampleBank(
+        sample_id=sample.sample_id,
+        boundary_id=sample.boundary.boundary_id,
+        query_dim=len(query_samples[0].raw_query_vector) if query_samples else 0,
+        sample_count=len(query_samples),
+        samples=query_samples,
+    )
+    return BoundaryCollection(
+        harvest=harvest,
+        query_bank=query_bank,
+        boundary_keys=boundary_keys,
+        boundary_values=boundary_values,
+        boundary_projected_values=boundary_projected_values,
+        output_targets=output_targets,
+        runtime_cache=past_key_values if retain_runtime_cache or not materialize_boundary_kv else None,
+        capture_token_indices=list(capture_indices),
+        monitored_observation_count=len(observations),
+        monitored_query_sample_count=len(query_samples),
+    )
