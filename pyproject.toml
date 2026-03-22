@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kv-compaction-qwen35-clean"
+version = "0.1.0"
+description = "Parallel clean artifact lane for Qwen3.5 KV compaction."
+requires-python = ">=3.9"
+dependencies = ["PyYAML>=6"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
