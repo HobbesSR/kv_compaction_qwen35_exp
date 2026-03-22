@@ -3,7 +3,11 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from kv_compaction_qwen35_clean.behavioral_eval import run_behavioral_evaluation, write_behavioral_result
+from kv_compaction_qwen35_clean.behavioral_eval import (
+    DEFAULT_PROMPT_SET,
+    run_behavioral_evaluation,
+    write_behavioral_result,
+)
 from kv_compaction_qwen35_clean.config import load_config
 from kv_compaction_qwen35_clean.context_loader import load_context_sample
 
@@ -11,7 +15,7 @@ from kv_compaction_qwen35_clean.context_loader import load_context_sample
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--keys-per-head", type=int, default=6)
-    parser.add_argument("--prompt-set", default="qwen35_calibration_v0")
+    parser.add_argument("--prompt-set", default=DEFAULT_PROMPT_SET)
     parser.add_argument("--prompt-limit", type=int, default=None)
     parser.add_argument("--max-new-tokens", type=int, default=64)
     return parser.parse_args()

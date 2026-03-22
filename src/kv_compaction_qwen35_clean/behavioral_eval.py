@@ -38,7 +38,7 @@ from kv_compaction_qwen35_clean.runtime_compaction import (
 
 
 MAX_NEW_TOKENS = 64
-DEFAULT_PROMPT_SET = "qwen35_calibration_v0"
+DEFAULT_PROMPT_SET = "qwen35_calibration_v2"
 
 
 def _build_qwen35_warehouse_prompts() -> list[BehavioralPrompt]:
@@ -115,6 +115,59 @@ PROMPT_SET_LABELS = {
         "qwen35_branch_switch_harness_note",
         "qwen35_branch_switch_appendix_details",
     ],
+    "qwen35_calibration_v1": [
+        "qwen35_same_task_status_triplet",
+        "qwen35_same_task_handoff_rollback",
+        "qwen35_branch_switch_harness_note",
+        "qwen35_branch_switch_appendix_details",
+    ],
+    "qwen35_calibration_v2": [
+        "qwen35_same_task_status_triplet",
+        "qwen35_same_task_handoff_rollback",
+        "qwen35_branch_switch_harness_note",
+        "qwen35_branch_switch_appendix_details",
+    ],
+}
+
+QWEN35_PROMPT_PARAPHRASES = {
+    "qwen35_same_task_status_triplet": (
+        "Respond with exactly these three lines and nothing else.\n"
+        "cutover_window: <time window>\n"
+        "live_traffic_check: <required check>\n"
+        "current_blocker: <blocker>\n"
+        "Use phrases from the context."
+    ),
+    "qwen35_same_task_handoff_rollback": (
+        "Respond with exactly these two lines and nothing else.\n"
+        "handoff_focus: <operator handoff focus>\n"
+        "dock_three_rollback: <rollback order if only dock three rolls back>\n"
+        "Include the specific rollback order from the context."
+    ),
+    "qwen35_branch_switch_harness_note": (
+        "Respond with exactly this one line and nothing else.\n"
+        "dock_and_note: <dock> ; <where the note is easy to miss>"
+    ),
+    "qwen35_branch_switch_appendix_details": (
+        "Respond with exactly these three lines and nothing else.\n"
+        "detail_1: <late appendix detail>\n"
+        "detail_2: <late appendix detail>\n"
+        "detail_3: <late appendix detail>\n"
+        "Use the three late appendix details besides the relay harness note."
+    ),
+}
+
+QWEN35_PROMPT_PARAPHRASES_V2 = {
+    "qwen35_same_task_status_triplet": (
+        "Answer with exactly three short bullets and nothing else. "
+        "Bullet 1: the cutover window. "
+        "Bullet 2: the check required before live traffic, using the phrase firmware validation pass. "
+        "Bullet 3: the current blocker, including delayed harness certification for dock three."
+    ),
+    "qwen35_same_task_handoff_rollback": (
+        "Answer with exactly two short bullets and nothing else. "
+        "Bullet 1: the operator handoff focus, including the handoff checklist. "
+        "Bullet 2: if only dock three rolls back, give the rollback order through dock two and then dock one."
+    ),
 }
 
 
@@ -126,7 +179,15 @@ def build_prompt_set(prompt_set: str = DEFAULT_PROMPT_SET, prompt_family: str = 
         labels = PROMPT_SET_LABELS[prompt_set]
     except KeyError as exc:
         raise ValueError(f"Unsupported prompt set {prompt_set!r}.") from exc
-    return [prompts_by_label[label] for label in labels]
+    prompts: list[BehavioralPrompt] = []
+    for label in labels:
+        prompt = prompts_by_label[label]
+        if prompt_set == "qwen35_calibration_v1":
+            prompt = replace(prompt, prompt_text=QWEN35_PROMPT_PARAPHRASES[label])
+        elif prompt_set == "qwen35_calibration_v2" and label in QWEN35_PROMPT_PARAPHRASES_V2:
+            prompt = replace(prompt, prompt_text=QWEN35_PROMPT_PARAPHRASES_V2[label])
+        prompts.append(prompt)
+    return prompts
 
 
 def _normalise_text(text: str) -> str:

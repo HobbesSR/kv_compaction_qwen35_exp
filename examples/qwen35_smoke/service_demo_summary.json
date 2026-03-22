@@ -1,0 +1,12 @@
+{
+  "sample_id": "local_qwen35_smoke_v0",
+  "boundary_id": "local_qwen35_smoke_v0:prompt_boundary_0",
+  "keys_per_head": 6,
+  "compacted_head_count": 16,
+  "effective_compact_tokens": 96,
+  "prefix_token_count": 7168,
+  "preserved_tail_tokens": 1024,
+  "capture_token_count": 28,
+  "monitored_observation_count": 672,
+  "monitored_query_sample_count": 672
+}

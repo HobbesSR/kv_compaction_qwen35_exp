@@ -71,4 +71,37 @@ The current validated artifact still lives in `clean_repo/` for Qwen2.5. The
 job here is to build the analogous Qwen3.5 lane without coupling the two
 implementation surfaces.
 
-See [docs/plan.md](./docs/plan.md) and [docs/repo_contract.md](./docs/repo_contract.md).
+## Current Demonstrated Result
+
+On the current validated local `Qwen3.5-9B` run:
+
+- reference: `4/4` central details, `0` hallucination runs
+- sketch: `3/4` central details, `0` hallucination runs
+- control: `3/4` central details, `0` hallucination runs
+
+That means the native Qwen3.5 smoke surface is now calibrated above floor and
+the compaction protocol works end to end on the model family. The remaining
+gap is that sketch does not yet beat the explicit control path on this lane.
+
+## Installed Commands
+
+After install:
+
+```bash
+cd qwen35_clean
+python3 -m pip install . --user
+```
+
+the repo exposes:
+
+- `kv-qwen35-smoke`
+- `kv-qwen35-demo`
+- `kv-qwen35-export-examples`
+
+See:
+
+- [docs/plan.md](./docs/plan.md)
+- [docs/repo_contract.md](./docs/repo_contract.md)
+- [docs/architecture.md](./docs/architecture.md)
+- [docs/results.md](./docs/results.md)
+- [docs/reproduction.md](./docs/reproduction.md)

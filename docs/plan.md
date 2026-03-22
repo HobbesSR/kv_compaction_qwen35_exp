@@ -45,11 +45,13 @@ Completed:
 - prototype bank / coreset substrate
 - key selection and runtime-fit substrate
 - first native smoke-eval runner
+- validated local `Qwen3.5-9B` smoke run on `qwen35_calibration_v2`
 
 Next:
 
-- smoke evaluation
-- validated local Qwen3.5 run in the dedicated environment
+- service demo shell
+- checked-in example summaries
+- outward-facing docs and packaging
 
 ## Explicit Non-Goals
 

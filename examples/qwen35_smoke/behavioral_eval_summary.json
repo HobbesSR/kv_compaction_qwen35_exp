@@ -1,0 +1,38 @@
+{
+  "sample_id": "local_qwen35_smoke_v0",
+  "boundary_id": "local_qwen35_smoke_v0:prompt_boundary_0",
+  "prompt_set": "qwen35_calibration_v2",
+  "keys_per_head": 6,
+  "key_selection_method": "highest_attention",
+  "prompt_labels": [
+    "qwen35_same_task_status_triplet",
+    "qwen35_same_task_handoff_rollback",
+    "qwen35_branch_switch_harness_note",
+    "qwen35_branch_switch_appendix_details"
+  ],
+  "reference": {
+    "runtime_seconds": 51.145611,
+    "preserved_central_detail_count": 4,
+    "omitted_central_detail_count": 0,
+    "hallucination_run_count": 0,
+    "effective_compact_tokens": 0
+  },
+  "sketch": {
+    "path": "prototype_bank",
+    "runtime_seconds": 45.145773,
+    "preserved_central_detail_count": 3,
+    "omitted_central_detail_count": 1,
+    "hallucination_run_count": 0,
+    "effective_compact_tokens": 96,
+    "compacted_head_count": 16
+  },
+  "control": {
+    "path": "teacher_forced_subsample",
+    "runtime_seconds": 44.972305,
+    "preserved_central_detail_count": 3,
+    "omitted_central_detail_count": 1,
+    "hallucination_run_count": 0,
+    "effective_compact_tokens": 96,
+    "compacted_head_count": 16
+  }
+}

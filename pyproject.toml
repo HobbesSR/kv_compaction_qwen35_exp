@@ -9,6 +9,11 @@ description = "Parallel clean artifact lane for Qwen3.5 KV compaction."
 requires-python = ">=3.9"
 dependencies = ["PyYAML>=6"]
 
+[project.scripts]
+kv-qwen35-smoke = "kv_compaction_qwen35_clean.cli:run_smoke_eval"
+kv-qwen35-demo = "kv_compaction_qwen35_clean.cli:run_service_demo"
+kv-qwen35-export-examples = "kv_compaction_qwen35_clean.cli:export_example_summaries"
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 
