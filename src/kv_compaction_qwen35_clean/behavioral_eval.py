@@ -339,6 +339,7 @@ def _continue_with_prompt(
     compacted_layers,
     prefix_token_count: int,
     enable_thinking: bool | None,
+    max_new_tokens: int,
 ) -> tuple[str, float]:
     import torch
 
@@ -377,7 +378,7 @@ def _continue_with_prompt(
 
         generated_token_ids: list[int] = []
         next_token = int(torch.argmax(logits, dim=-1).item())
-        for _ in range(MAX_NEW_TOKENS):
+        for _ in range(max_new_tokens):
             if tokenizer.eos_token_id is not None and next_token == tokenizer.eos_token_id:
                 break
             generated_token_ids.append(next_token)
@@ -407,8 +408,14 @@ def run_behavioral_evaluation(
     keys_per_head: int,
     prompt_set: str = DEFAULT_PROMPT_SET,
     key_selection_method: str = "highest_attention",
+    prompt_limit: int | None = None,
+    max_new_tokens: int = MAX_NEW_TOKENS,
 ) -> BehavioralEvalResult:
     prompts = build_prompt_set(prompt_set, sample.prompt_family)
+    if prompt_limit is not None:
+        prompts = prompts[: max(0, int(prompt_limit))]
+        if not prompts:
+            raise ValueError("prompt_limit produced an empty prompt set.")
     eval_config = replace(config, model=replace(config.model, attn_implementation="eager"))
     model, tokenizer, model_type = load_qwen35_bundle(eval_config)
     try:
@@ -479,6 +486,7 @@ def run_behavioral_evaluation(
                 compacted_layers=None,
                 prefix_token_count=sample.boundary.prefix_token_count,
                 enable_thinking=eval_config.model.enable_thinking,
+                max_new_tokens=max_new_tokens,
             )
             reference_total_runtime += reference_runtime
             reference_run = evaluate_run(
@@ -498,6 +506,7 @@ def run_behavioral_evaluation(
                 compacted_layers=sketch_layers,
                 prefix_token_count=sample.boundary.prefix_token_count,
                 enable_thinking=eval_config.model.enable_thinking,
+                max_new_tokens=max_new_tokens,
             )
             sketch_total_runtime += sketch_runtime
             sketch_runs.append(
@@ -520,6 +529,7 @@ def run_behavioral_evaluation(
                 compacted_layers=control_layers,
                 prefix_token_count=sample.boundary.prefix_token_count,
                 enable_thinking=eval_config.model.enable_thinking,
+                max_new_tokens=max_new_tokens,
             )
             control_total_runtime += control_runtime
             control_runs.append(

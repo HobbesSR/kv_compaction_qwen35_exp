@@ -60,6 +60,13 @@ Model-backed Qwen3.5 commands still require the dedicated Qwen3.5 environment.
 In the default workspace env, those commands fail fast with a clear dependency
 message instead of a raw Transformers stack trace.
 
+Operational note:
+
+- on this machine, `Qwen3.5-9B` currently runs on the torch fallback path
+  because the fast-path extensions are not installed
+- the native smoke runner now exposes `--prompt-limit` and
+  `--max-new-tokens` for bring-up and smoke iteration under that slower path
+
 The current validated artifact still lives in `clean_repo/` for Qwen2.5. The
 job here is to build the analogous Qwen3.5 lane without coupling the two
 implementation surfaces.
