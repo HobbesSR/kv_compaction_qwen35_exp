@@ -242,6 +242,11 @@ def default_probe_heads_for_model(model) -> tuple[int, ...]:
     return tuple(head for head in PROBE_HEADS if head < max_head_count)
 
 
+def all_probe_heads_for_model(model) -> tuple[int, ...]:
+    max_head_count = int(getattr(model.config, "num_attention_heads", 0))
+    return tuple(range(max_head_count))
+
+
 def unload_qwen35_bundle(model) -> None:
     try:
         import torch

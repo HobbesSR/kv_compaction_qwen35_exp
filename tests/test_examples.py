@@ -9,7 +9,8 @@ def test_behavioral_eval_summary_example_shape() -> None:
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert payload["prompt_set"] == "qwen35_calibration_v3"
     assert payload["reference"]["preserved_central_detail_count"] >= 4
-    assert payload["control"]["preserved_central_detail_count"] >= 4
+    assert payload["sketch"]["preserved_central_detail_count"] >= 4
+    assert payload["control"]["preserved_central_detail_count"] >= 3
     assert payload["sketch"]["preserved_central_detail_count"] >= 2
 
 

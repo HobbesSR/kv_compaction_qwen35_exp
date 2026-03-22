@@ -18,6 +18,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--prompt-set", default=DEFAULT_PROMPT_SET)
     parser.add_argument("--prompt-limit", type=int, default=None)
     parser.add_argument("--max-new-tokens", type=int, default=64)
+    parser.add_argument("--probe-coverage", choices=("narrow", "all_heads"), default="narrow")
     return parser.parse_args()
 
 
@@ -33,8 +34,11 @@ def main() -> None:
         key_selection_method=config.compaction.key_selection,
         prompt_limit=args.prompt_limit,
         max_new_tokens=args.max_new_tokens,
+        probe_coverage=args.probe_coverage,
     )
     suffix = ""
+    if args.probe_coverage != "narrow":
+        suffix += f"_{args.probe_coverage}"
     if args.prompt_limit is not None:
         suffix += f"_p{args.prompt_limit}"
     if args.max_new_tokens != 64:

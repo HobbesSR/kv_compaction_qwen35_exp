@@ -5,7 +5,9 @@ from pathlib import Path
 
 from kv_compaction_qwen35_clean.boundary_collection import load_boundary_collection
 from kv_compaction_qwen35_clean.config import load_config
+from kv_compaction_qwen35_clean.coreset import _select_layer_diverse_entries
 from kv_compaction_qwen35_clean.coreset import extract_query_coreset, write_query_coreset
+from kv_compaction_qwen35_clean.prototype_bank import PrototypeBankState, PrototypeEntry
 from kv_compaction_qwen35_clean.prototype_bank import build_state_from_observations
 
 
@@ -38,3 +40,17 @@ def test_write_query_coreset_serializes_json(tmp_path: Path) -> None:
     payload = json.loads(output_path.read_text(encoding="utf-8"))
     assert payload["source"] == "prototype_bank"
     assert payload["selected_entries"]
+
+
+def test_select_layer_diverse_entries_keeps_one_per_layer_before_fill() -> None:
+    entries = [
+        PrototypeEntry("p0", 31, 7, [1.0], [1.0], 0.9, 9.0, 0.9, 1, 100),
+        PrototypeEntry("p1", 31, 3, [0.9], [0.9], 0.8, 8.0, 0.8, 1, 99),
+        PrototypeEntry("p2", 23, 7, [0.8], [0.8], 0.4, 4.0, 0.4, 1, 80),
+        PrototypeEntry("p3", 11, 0, [0.7], [0.7], 0.3, 3.0, 0.3, 1, 60),
+    ]
+
+    selected = _select_layer_diverse_entries(entries, limit=3)
+
+    assert len(selected) == 3
+    assert {entry.layer for entry in selected} == {31, 23, 11}

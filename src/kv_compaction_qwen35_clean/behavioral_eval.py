@@ -18,6 +18,7 @@ from kv_compaction_qwen35_clean.data_types import (
     FactExpectation,
 )
 from kv_compaction_qwen35_clean.model_runtime import (
+    all_probe_heads_for_model,
     build_qwen35_prompt_ids,
     default_probe_heads_for_model,
     default_probe_layers_for_model,
@@ -486,6 +487,55 @@ def _continue_with_prompt(
     return generated_text, round(time.perf_counter() - start_time, 6)
 
 
+def _run_prompt_path(
+    *,
+    model,
+    tokenizer,
+    prompts: list[BehavioralPrompt],
+    prefix_token_ids: list[int],
+    tail_token_ids: list[int],
+    device: str,
+    compacted_layers,
+    prefix_token_count: int,
+    enable_thinking: bool | None,
+    max_new_tokens: int,
+    reference_runs: list[BehavioralRunResult] | None = None,
+) -> tuple[list[BehavioralRunResult], float]:
+    runs: list[BehavioralRunResult] = []
+    total_runtime = 0.0
+    for index, prompt in enumerate(prompts):
+        generated_text, runtime = _continue_with_prompt(
+            model=model,
+            tokenizer=tokenizer,
+            prefix_token_ids=prefix_token_ids,
+            tail_token_ids=tail_token_ids,
+            prompt=prompt,
+            device=device,
+            compacted_layers=compacted_layers,
+            prefix_token_count=prefix_token_count,
+            enable_thinking=enable_thinking,
+            max_new_tokens=max_new_tokens,
+        )
+        total_runtime += runtime
+        if reference_runs is None:
+            run = evaluate_run(
+                prompt=prompt,
+                generated_text=generated_text,
+                runtime_seconds=runtime,
+            )
+        else:
+            reference_run = reference_runs[index]
+            run = evaluate_run(
+                prompt=prompt,
+                generated_text=generated_text,
+                runtime_seconds=runtime,
+                reference_text=reference_run.generated_text,
+                reference_hits=reference_run.required_fact_labels_hit,
+            )
+        runs.append(run)
+    return runs, total_runtime
+
+
 def run_behavioral_evaluation(
     sample,
     config,
@@ -495,139 +545,121 @@ def run_behavioral_evaluation(
     key_selection_method: str = "highest_attention",
     prompt_limit: int | None = None,
     max_new_tokens: int = MAX_NEW_TOKENS,
+    probe_coverage: str = "narrow",
 ) -> BehavioralEvalResult:
     prompts = build_prompt_set(prompt_set, sample.prompt_family)
     if prompt_limit is not None:
         prompts = prompts[: max(0, int(prompt_limit))]
         if not prompts:
             raise ValueError("prompt_limit produced an empty prompt set.")
-    eval_config = replace(config, model=replace(config.model, attn_implementation="eager"))
-    model, tokenizer, model_type = load_qwen35_bundle(eval_config)
+    collection_config = replace(config, model=replace(config.model, attn_implementation="eager"))
+    collection_model, collection_tokenizer, model_type = load_qwen35_bundle(collection_config)
     try:
-        probe_layers = default_probe_layers_for_model(model, model_type)
-        probe_heads = default_probe_heads_for_model(model)
+        probe_layers = default_probe_layers_for_model(collection_model, model_type)
+        if probe_coverage == "narrow":
+            probe_heads = default_probe_heads_for_model(collection_model)
+        elif probe_coverage == "all_heads":
+            probe_heads = all_probe_heads_for_model(collection_model)
+        else:
+            raise ValueError(f"Unsupported probe_coverage {probe_coverage!r}.")
         target_layer_heads = tuple((int(layer), int(head)) for layer in probe_layers for head in probe_heads)
 
         bundle = collect_teacher_forced_boundary_collection(
             sample,
-            eval_config,
-            model=model,
-            tokenizer=tokenizer,
+            collection_config,
+            model=collection_model,
+            tokenizer=collection_tokenizer,
             probe_layers=probe_layers,
             probe_heads=probe_heads,
         )
-        state = build_state_from_observations(eval_config, bundle.harvest.observations)
-        sketch_source = extract_query_coreset(sample.sample_id, sample.boundary.boundary_id, state, eval_config)
+        state = build_state_from_observations(collection_config, bundle.harvest.observations)
+        sketch_source = extract_query_coreset(sample.sample_id, sample.boundary.boundary_id, state, collection_config)
         control_query_source = extract_teacher_forced_subsample_control(
             bundle.query_bank,
             max_entries=len(sketch_source.selected_entries),
         )
-        sketch_selection, sketch_layers = build_path_runtime(
-            sample.sample_id,
-            sample.boundary.boundary_id,
-            sketch_source.source,
-            keys_per_head,
-            bundle,
-            sketch_source,
-            target_layers=probe_layers,
-            target_heads=probe_heads,
-            target_layer_heads=target_layer_heads,
-            compute_device=eval_config.model.device,
-            key_selection_method=key_selection_method,
-        )
-        control_selection, control_layers = build_path_runtime(
-            sample.sample_id,
-            sample.boundary.boundary_id,
-            control_query_source.source,
-            keys_per_head,
-            bundle,
-            control_query_source,
-            target_layers=probe_layers,
-            target_heads=probe_heads,
-            target_layer_heads=target_layer_heads,
-            compute_device=eval_config.model.device,
-            key_selection_method=key_selection_method,
-        )
-
-        token_ids, _ = materialize_long_context_ids(sample, tokenizer)
-        prefix_token_ids = token_ids[: sample.boundary.prefix_token_count]
-        tail_token_ids = token_ids[sample.boundary.prefix_token_count :]
-
-        reference_runs: list[BehavioralRunResult] = []
-        sketch_runs: list[BehavioralRunResult] = []
-        control_runs: list[BehavioralRunResult] = []
-        reference_total_runtime = 0.0
-        sketch_total_runtime = 0.0
-        control_total_runtime = 0.0
-
-        for prompt in prompts:
-            reference_text, reference_runtime = _continue_with_prompt(
-                model=model,
-                tokenizer=tokenizer,
-                prefix_token_ids=prefix_token_ids,
-                tail_token_ids=tail_token_ids,
-                prompt=prompt,
-                device=eval_config.model.device,
-                compacted_layers=None,
-                prefix_token_count=sample.boundary.prefix_token_count,
-                enable_thinking=eval_config.model.enable_thinking,
-                max_new_tokens=max_new_tokens,
-            )
-            reference_total_runtime += reference_runtime
-            reference_run = evaluate_run(
-                prompt=prompt,
-                generated_text=reference_text,
-                runtime_seconds=reference_runtime,
-            )
-            reference_runs.append(reference_run)
-
-            sketch_text, sketch_runtime = _continue_with_prompt(
-                model=model,
-                tokenizer=tokenizer,
-                prefix_token_ids=prefix_token_ids,
-                tail_token_ids=tail_token_ids,
-                prompt=prompt,
-                device=eval_config.model.device,
-                compacted_layers=sketch_layers,
-                prefix_token_count=sample.boundary.prefix_token_count,
-                enable_thinking=eval_config.model.enable_thinking,
-                max_new_tokens=max_new_tokens,
-            )
-            sketch_total_runtime += sketch_runtime
-            sketch_runs.append(
-                evaluate_run(
-                    prompt=prompt,
-                    generated_text=sketch_text,
-                    runtime_seconds=sketch_runtime,
-                    reference_text=reference_text,
-                    reference_hits=reference_run.required_fact_labels_hit,
-                )
-            )
-
-            control_text, control_runtime = _continue_with_prompt(
-                model=model,
-                tokenizer=tokenizer,
-                prefix_token_ids=prefix_token_ids,
-                tail_token_ids=tail_token_ids,
-                prompt=prompt,
-                device=eval_config.model.device,
-                compacted_layers=control_layers,
-                prefix_token_count=sample.boundary.prefix_token_count,
-                enable_thinking=eval_config.model.enable_thinking,
-                max_new_tokens=max_new_tokens,
-            )
-            control_total_runtime += control_runtime
-            control_runs.append(
-                evaluate_run(
-                    prompt=prompt,
-                    generated_text=control_text,
-                    runtime_seconds=control_runtime,
-                    reference_text=reference_text,
-                    reference_hits=reference_run.required_fact_labels_hit,
-                )
-            )
+        token_ids, _ = materialize_long_context_ids(sample, collection_tokenizer)
     finally:
-        unload_qwen35_bundle(model)
+        unload_qwen35_bundle(collection_model)
+
+    prefix_token_ids = token_ids[: sample.boundary.prefix_token_count]
+    tail_token_ids = token_ids[sample.boundary.prefix_token_count :]
+
+    reference_model, reference_tokenizer, _ = load_qwen35_bundle(config)
+    try:
+        reference_runs, reference_total_runtime = _run_prompt_path(
+            model=reference_model,
+            tokenizer=reference_tokenizer,
+            prompts=prompts,
+            prefix_token_ids=prefix_token_ids,
+            tail_token_ids=tail_token_ids,
+            device=config.model.device,
+            compacted_layers=None,
+            prefix_token_count=sample.boundary.prefix_token_count,
+            enable_thinking=config.model.enable_thinking,
+            max_new_tokens=max_new_tokens,
+            reference_runs=None,
+        )
+    finally:
+        unload_qwen35_bundle(reference_model)
+
+    sketch_selection, sketch_layers = build_path_runtime(
+        sample.sample_id,
+        sample.boundary.boundary_id,
+        sketch_source.source,
+        keys_per_head,
+        bundle,
+        sketch_source,
+        target_layers=probe_layers,
+        target_heads=probe_heads,
+        target_layer_heads=target_layer_heads,
+        compute_device=collection_config.model.device,
+        key_selection_method=key_selection_method,
+    )
+    control_selection, control_layers = build_path_runtime(
+        sample.sample_id,
+        sample.boundary.boundary_id,
+        control_query_source.source,
+        keys_per_head,
+        bundle,
+        control_query_source,
+        target_layers=probe_layers,
+        target_heads=probe_heads,
+        target_layer_heads=target_layer_heads,
+        compute_device=collection_config.model.device,
+        key_selection_method=key_selection_method,
+    )
+
+    continuation_model, continuation_tokenizer, _ = load_qwen35_bundle(collection_config)
+    try:
+        sketch_runs, sketch_total_runtime = _run_prompt_path(
+            model=continuation_model,
+            tokenizer=continuation_tokenizer,
+            prompts=prompts,
+            prefix_token_ids=prefix_token_ids,
+            tail_token_ids=tail_token_ids,
+            device=collection_config.model.device,
+            compacted_layers=sketch_layers,
+            prefix_token_count=sample.boundary.prefix_token_count,
+            enable_thinking=collection_config.model.enable_thinking,
+            max_new_tokens=max_new_tokens,
+            reference_runs=reference_runs,
+        )
+        control_runs, control_total_runtime = _run_prompt_path(
+            model=continuation_model,
+            tokenizer=continuation_tokenizer,
+            prompts=prompts,
+            prefix_token_ids=prefix_token_ids,
+            tail_token_ids=tail_token_ids,
+            device=collection_config.model.device,
+            compacted_layers=control_layers,
+            prefix_token_count=sample.boundary.prefix_token_count,
+            enable_thinking=collection_config.model.enable_thinking,
+            max_new_tokens=max_new_tokens,
+            reference_runs=reference_runs,
+        )
+    finally:
+        unload_qwen35_bundle(continuation_model)
 
     return BehavioralEvalResult(
         sample_id=sample.sample_id,

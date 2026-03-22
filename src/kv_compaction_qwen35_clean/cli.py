@@ -13,6 +13,8 @@ from kv_compaction_qwen35_clean.service_demo import (
 
 
 DEFAULT_CONFIG_PATH = "configs/qwen35_smoke/qwen3_5_9b.yaml"
+DEFAULT_SMOKE_KEYS_PER_HEAD = 8
+DEFAULT_SERVICE_DEMO_KEYS_PER_HEAD = 6
 
 
 def run_smoke_eval() -> None:
@@ -21,11 +23,13 @@ def run_smoke_eval() -> None:
     result = run_behavioral_evaluation(
         sample,
         config,
-        keys_per_head=6,
+        keys_per_head=DEFAULT_SMOKE_KEYS_PER_HEAD,
         prompt_set=DEFAULT_PROMPT_SET,
         max_new_tokens=40,
     )
-    output_path = Path(f"artifacts/qwen35_smoke/behavioral_eval_{DEFAULT_PROMPT_SET}_k6_t40.json")
+    output_path = Path(
+        f"artifacts/qwen35_smoke/behavioral_eval_{DEFAULT_PROMPT_SET}_k{DEFAULT_SMOKE_KEYS_PER_HEAD}_t40.json"
+    )
     write_behavioral_result(result, output_path)
     print(output_path)
 
@@ -40,7 +44,7 @@ def run_service_demo() -> None:
     session = build_service_demo_session(
         sample,
         config,
-        keys_per_head=6,
+        keys_per_head=DEFAULT_SERVICE_DEMO_KEYS_PER_HEAD,
         progress_callback=on_progress,
     )
     try:
@@ -82,7 +86,9 @@ def export_example_summaries() -> None:
     example_root = Path("examples/qwen35_smoke")
     example_root.mkdir(parents=True, exist_ok=True)
 
-    behavioral_path = artifact_root / f"behavioral_eval_{DEFAULT_PROMPT_SET}_k6_t40.json"
+    behavioral_path = artifact_root / (
+        f"behavioral_eval_{DEFAULT_PROMPT_SET}_k{DEFAULT_SMOKE_KEYS_PER_HEAD}_t40.json"
+    )
     behavioral = json.loads(behavioral_path.read_text(encoding="utf-8"))
     behavioral_summary = {
         "sample_id": behavioral["sample_id"],

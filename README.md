@@ -66,6 +66,9 @@ Operational note:
   because the fast-path extensions are not installed
 - the native smoke runner now exposes `--prompt-limit` and
   `--max-new-tokens` for bring-up and smoke iteration under that slower path
+- the default smoke claim now uses a slightly larger compact budget than the
+  interactive demo: smoke runs at `k=8`, while the service demo remains at
+  `k=6` for a cheaper interactive path
 
 The current validated artifact still lives in `clean_repo/` for Qwen2.5. The
 job here is to build the analogous Qwen3.5 lane without coupling the two
@@ -76,13 +79,13 @@ implementation surfaces.
 On the current validated local `Qwen3.5-9B` run:
 
 - reference: `4/4` central details, `0` hallucination runs
-- sketch: `2/4` central details, `0` hallucination runs
-- control: `4/4` central details, `0` hallucination runs
+- sketch: `4/4` central details, `0` hallucination runs
+- control: `3/4` central details, `0` hallucination runs
 
 That means the native Qwen3.5 smoke surface is now calibrated above floor and
-the compaction protocol works end to end on the model family. The remaining
-gap is sharper than before: on the cleaner non-contaminating prompt surface,
-the explicit control path matches reference while sketch drops to `2/4`.
+the compaction protocol works end to end on the model family. On the current
+validated smoke artifact, the sketch path now matches reference at a modest
+`k=8` compact budget while the explicit control path drops one appendix fact.
 
 ## Installed Commands
 

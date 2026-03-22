@@ -20,6 +20,7 @@ class PrototypeEntry:
     weight: float
     update_count: int
     last_token_index: int
+    source_turn_id: str = field(default="")
     center_query_norm: float = field(default=0.0, repr=False)
     center_output_norm: float = field(default=0.0, repr=False)
 
@@ -87,6 +88,7 @@ class PrototypeBankState:
                     "weight": entry.weight,
                     "update_count": entry.update_count,
                     "last_token_index": entry.last_token_index,
+                    "source_turn_id": entry.source_turn_id,
                 }
                 for entry in self.entries
             ],
@@ -216,8 +218,69 @@ def _refresh_entry_norms(entry: PrototypeEntry) -> None:
     entry.center_output_norm = round(_norm(entry.center_output_projection), 6)
 
 
-def _replacement_index(state: PrototypeBankState, config: SmokeTestConfig) -> int:
-    candidate_indices = list(range(len(state.entries)))
+def _replacement_index(
+    state: PrototypeBankState,
+    config: SmokeTestConfig,
+    incoming_turn_id: str,
+    incoming_layer: int,
+    incoming_head: int,
+) -> int:
+    # Count how many slots each source_turn_id currently holds.
+    turn_counts: dict[str, int] = {}
+    layer_counts: dict[int, int] = {}
+    for entry in state.entries:
+        turn_counts[entry.source_turn_id] = turn_counts.get(entry.source_turn_id, 0) + 1
+        layer_counts[int(entry.layer)] = layer_counts.get(int(entry.layer), 0) + 1
+    distinct_layers = set(layer_counts)
+    distinct_layers.add(int(incoming_layer))
+    layer_quota = max(1, config.sketch.max_prototypes // max(1, len(distinct_layers)))
+    incoming_layer_count = layer_counts.get(int(incoming_layer), 0)
+    if incoming_layer_count >= layer_quota:
+        layer_indices = [
+            index
+            for index, entry in enumerate(state.entries)
+            if int(entry.layer) == int(incoming_layer)
+        ]
+        if layer_indices:
+            h0_indices = [i for i in layer_indices if int(state.entries[i].head) == 0]
+            non_h0_indices = [i for i in layer_indices if int(state.entries[i].head) != 0]
+            if int(incoming_head) == 0:
+                # H0 entering: recycle within H0 if possible, else displace a non-H0.
+                candidate_indices = h0_indices if h0_indices else layer_indices
+            else:
+                # Non-H0 entering: protect exactly one H0 slot per layer.
+                # Evict only from non-H0 entries; fall back to all if none exist.
+                candidate_indices = non_h0_indices if non_h0_indices else layer_indices
+            return min(
+                candidate_indices,
+                key=lambda index: _materialize_entry_decay(state, index, config).weight,
+            )
+    overfull_layer_indices = [
+        index
+        for index, entry in enumerate(state.entries)
+        if layer_counts.get(int(entry.layer), 0) > layer_quota
+    ]
+    if overfull_layer_indices:
+        return min(
+            overfull_layer_indices,
+            key=lambda index: _materialize_entry_decay(state, index, config).weight,
+        )
+    incoming_count = turn_counts.get(incoming_turn_id, 0)
+    if incoming_count > 0:
+        # Once a turn is represented, recycle its own slots before spending
+        # another turn's last survivor.
+        candidate_indices = [
+            index
+            for index, entry in enumerate(state.entries)
+            if entry.source_turn_id == incoming_turn_id
+        ]
+    else:
+        max_count = max(turn_counts.values())
+        candidate_indices = [
+            index
+            for index, entry in enumerate(state.entries)
+            if turn_counts[entry.source_turn_id] == max_count
+        ]
     return min(
         candidate_indices,
         key=lambda index: _materialize_entry_decay(state, index, config).weight,
@@ -278,6 +341,7 @@ def apply_observation(
                 weight=round(gate, 6),
                 update_count=1,
                 last_token_index=observation.token_index,
+                source_turn_id=str(observation.source_turn_id),
             ),
         )
         state.next_prototype_index += 1
@@ -313,13 +377,20 @@ def apply_observation(
             weight=round(gate, 6),
             update_count=1,
             last_token_index=observation.token_index,
+            source_turn_id=str(observation.source_turn_id),
         )
         state.next_prototype_index += 1
 
         if len(state.entries) < config.sketch.max_prototypes:
             _append_entry(state, candidate)
         else:
-            replace_index = _replacement_index(state, config)
+            replace_index = _replacement_index(
+                state,
+                config,
+                candidate.source_turn_id,
+                candidate.layer,
+                candidate.head,
+            )
             _replace_entry(state, replace_index, candidate)
         return
 

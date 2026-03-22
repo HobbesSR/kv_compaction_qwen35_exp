@@ -2,7 +2,7 @@
   "sample_id": "local_qwen35_smoke_v0",
   "boundary_id": "local_qwen35_smoke_v0:prompt_boundary_0",
   "prompt_set": "qwen35_calibration_v3",
-  "keys_per_head": 6,
+  "keys_per_head": 8,
   "key_selection_method": "highest_attention",
   "prompt_labels": [
     "qwen35_same_task_status_triplet",
@@ -11,28 +11,28 @@
     "qwen35_branch_switch_appendix_details"
   ],
   "reference": {
-    "runtime_seconds": 54.250728,
+    "runtime_seconds": 53.494985,
     "preserved_central_detail_count": 4,
     "omitted_central_detail_count": 0,
     "hallucination_run_count": 0,
     "effective_compact_tokens": 0
   },
   "sketch": {
-    "path": "prototype_bank",
-    "runtime_seconds": 44.006578,
-    "preserved_central_detail_count": 2,
-    "omitted_central_detail_count": 2,
-    "hallucination_run_count": 0,
-    "effective_compact_tokens": 96,
-    "compacted_head_count": 16
-  },
-  "control": {
-    "path": "teacher_forced_subsample",
-    "runtime_seconds": 46.302045,
+    "path": "sketch",
+    "runtime_seconds": 54.269522,
     "preserved_central_detail_count": 4,
     "omitted_central_detail_count": 0,
     "hallucination_run_count": 0,
-    "effective_compact_tokens": 96,
+    "effective_compact_tokens": 128,
+    "compacted_head_count": 16
+  },
+  "control": {
+    "path": "control",
+    "runtime_seconds": 50.569344,
+    "preserved_central_detail_count": 3,
+    "omitted_central_detail_count": 1,
+    "hallucination_run_count": 0,
+    "effective_compact_tokens": 128,
     "compacted_head_count": 16
   }
 }

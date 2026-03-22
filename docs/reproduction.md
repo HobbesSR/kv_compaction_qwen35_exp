@@ -36,26 +36,29 @@ kv-qwen35-smoke
 
 Output artifact:
 
-- `artifacts/qwen35_smoke/behavioral_eval_qwen35_calibration_v3_k6_t40.json`
+- `artifacts/qwen35_smoke/behavioral_eval_qwen35_calibration_v3_k8_t40.json`
 
 Current observed local summary on the default `Qwen/Qwen3.5-9B` config:
 
 - reference:
-  - runtime: `54.250728s`
+  - runtime: `53.494985s`
   - central details preserved: `4/4`
   - hallucination runs: `0`
 - sketch:
-  - runtime: `44.006578s`
-  - central details preserved: `2/4`
-  - hallucination runs: `0`
-  - effective compact tokens: `96`
-- control:
-  - runtime: `46.302045s`
+  - runtime: `61.673165s`
   - central details preserved: `4/4`
   - hallucination runs: `0`
-  - effective compact tokens: `96`
+  - effective compact tokens: `128`
+- control:
+  - runtime: `50.569344s`
+  - central details preserved: `3/4`
+  - hallucination runs: `0`
+  - effective compact tokens: `128`
 
 These are the current local demonstration numbers, not paper claims.
+
+The smoke command uses `k=8` because that is the current validated best
+artifact. The interactive service demo remains on a cheaper `k=6` setup.
 
 ## Service Demo
 

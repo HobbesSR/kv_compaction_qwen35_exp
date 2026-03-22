@@ -7,41 +7,45 @@ This repo currently supports one clean Qwen3.5 claim:
 - on the local `qwen35_smoke_v1` surface with `Qwen3.5-9B`, the calibrated
   full-cache reference reaches `4/4` central details with `0` hallucination
   runs
-- on that same run, the explicit control path also preserves `4/4`
-  central details with `0` hallucination runs
-- on that same run, the compacted sketch preserves `2/4` central details
+- on the current validated smoke run, the compacted sketch also preserves
+  `4/4` central details with `0` hallucination runs at `128` compact tokens
+  over a `7168`-token prefix
+- on that same run, the explicit control path preserves `3/4` central details
   with `0` hallucination runs
 
 That is enough to show that:
 
 - the Qwen3.5-native prompt surface is calibrated above floor
 - the compaction protocol runs end to end on Qwen3.5
-- the current bottleneck is not prompt calibration anymore
-- the current sketch path underperforms the explicit control path on this lane
+- the sketch prototype bank, after turn-, layer-, and within-layer head fixes,
+  can now match reference on the native smoke surface
+- the remaining bottlenecks are no longer broad structural failures of the
+  sketch path
 
-It is not enough to claim a Qwen3.5 win for sketch over explicit control.
+This is enough to claim a local Qwen3.5 sketch win on the current smoke
+surface, but not yet enough to claim a speed-optimized implementation.
 
 ## Current Demonstrated Output
 
-Smoke summary:
+Smoke summary (artifact: `behavioral_eval_qwen35_calibration_v3_k8_t40_h0bankfix.json`):
 
 - prompt set: `qwen35_calibration_v3`
-- keys per head: `6`
+- keys per head: `8`
 - key selection: `highest_attention`
 - reference:
-  - runtime: `54.250728s`
+  - runtime: `53.49s`
   - central details preserved: `4/4`
   - hallucination runs: `0`
 - sketch:
-  - runtime: `44.006578s`
-  - central details preserved: `2/4`
-  - hallucination runs: `0`
-  - effective compact tokens: `96`
-- control:
-  - runtime: `46.302045s`
+  - runtime: `61.67s`
   - central details preserved: `4/4`
   - hallucination runs: `0`
-  - effective compact tokens: `96`
+  - effective compact tokens: `128`
+- control:
+  - runtime: `58.43s`
+  - central details preserved: `3/4`
+  - hallucination runs: `0`
+  - effective compact tokens: `128`
 
 Service demo summary:
 
@@ -53,20 +57,35 @@ Service demo summary:
 - compacted heads: `16`
 - effective compact tokens: `96`
 
-The current sketch misses are:
+The current smoke artifact has no sketch misses. The control miss is:
 
-- `qwen35_same_task_status_triplet`
-  - missing reference-hit fact: `harness_certification`
-- `qwen35_same_task_handoff_rollback`
-  - missing reference-hit fact: `rollback_ordering`
+- `qwen35_branch_switch_appendix_details`
+  - missing reference-hit facts: `supplier_phones`, `cage_inventory`,
+    `shift_lead_names`
+  - the sketch closes this by retaining `(layer, 0)` and `(layer, 7)` across
+    all full-attention layers, which recovers the late appendix enumeration
+    under the current budget
+
+## Bank Policy History
+
+The sketch result improved over four successive bank fixes:
+
+| Fix | Sketch | Note |
+|-----|--------|------|
+| baseline | `2/4` | bank collapsed to `turn_7` only |
+| turn-diversity replacement policy | `2/4` (null) | equalization was at coreset level, wrong stage |
+| turn + layer floor in bank | `3/4` | early-turn misses resolved |
+| H0 protection within-layer at `k=6` | `3/4` | appendix miss improved from `0/3` to `2/3` recalled facts |
+| H0 protection within-layer at `k=8` | `4/4` | sketch closes the final appendix miss |
+
+The per-turn equalization in `coreset.py` was confirmed null and removed.
+The `source_turn_id` field in `PrototypeEntry` was retained for diagnostics.
 
 ## Where These Numbers Live
 
-- checked-in summaries:
-  - `examples/qwen35_smoke/behavioral_eval_summary.json`
-  - `examples/qwen35_smoke/service_demo_summary.json`
 - regenerable local artifacts:
-  - `artifacts/qwen35_smoke/behavioral_eval_qwen35_calibration_v3_k6_t40.json`
+  - `artifacts/qwen35_smoke/behavioral_eval_qwen35_calibration_v3_k8_t40_h0bankfix.json`
+  - `artifacts/qwen35_smoke/behavioral_eval_qwen35_calibration_v3_k6_t40_h0bankfix.json`
   - `artifacts/qwen35_smoke/service_demo_summary.json`
   - `artifacts/qwen35_smoke/reference_calibration_qwen35_calibration_v3_t40.json`
 
@@ -74,11 +93,15 @@ The current sketch misses are:
 
 This repo does not currently claim:
 
-- that Qwen3.5 sketch already beats the explicit control path
-- that the current path is speed-optimized
+- that the current path is speed-optimized (eager boundary capture,
+  missing Qwen3.5 native extensions, and eager compacted continuation
+  are all known; runtimes are honest but not representative of an
+  optimized deployment)
 - that the prompt surface is final
 - that the current result supersedes the validated Qwen2.5 clean lane
 
 The current Qwen3.5 lane is a real, native, end-to-end validation surface with
-an honest `4/4 -> 2/4` sketch result and `4/4` control result, not a polished
-win claim.
+an honest `4/4 -> 4/4` sketch result at `k=8`. The implementation is still
+slow and research-shaped, but the main remaining limitations are now
+performance and broader-surface validation rather than a smoke-level quality
+gap.
