@@ -711,12 +711,19 @@ def _collect_boundary_collection_with_model(
         while processed_token_count < capture_start:
             chunk_end = min(capture_start, processed_token_count + int(config.model.prefill_chunk_size))
             chunk_input_ids = full_input_ids[:, processed_token_count:chunk_end]
+            cache_position = torch.arange(
+                processed_token_count,
+                chunk_end,
+                device=config.model.device,
+                dtype=torch.long,
+            )
             with torch.inference_mode():
                 bulk_outputs = model(
                     input_ids=chunk_input_ids,
                     past_key_values=past_key_values,
                     use_cache=True,
                     return_dict=True,
+                    cache_position=cache_position,
                 )
             past_key_values = bulk_outputs.past_key_values
             processed_token_count = chunk_end
@@ -737,6 +744,12 @@ def _collect_boundary_collection_with_model(
             "past_key_values": past_key_values,
             "use_cache": True,
             "return_dict": True,
+            "cache_position": torch.arange(
+                capture_start,
+                capture_end,
+                device=config.model.device,
+                dtype=torch.long,
+            ),
         }
         if use_trace_prompt_capture:
             trace_buffer = AttentionTraceChunkBuffer(
@@ -816,12 +829,19 @@ def _collect_boundary_collection_with_model(
     while processed_token_count < prefix_token_count:
         chunk_end = min(prefix_token_count, processed_token_count + int(config.model.prefill_chunk_size))
         chunk_input_ids = full_input_ids[:, processed_token_count:chunk_end]
+        cache_position = torch.arange(
+            processed_token_count,
+            chunk_end,
+            device=config.model.device,
+            dtype=torch.long,
+        )
         with torch.inference_mode():
             bulk_outputs = model(
                 input_ids=chunk_input_ids,
                 past_key_values=past_key_values,
                 use_cache=True,
                 return_dict=True,
+                cache_position=cache_position,
             )
         past_key_values = bulk_outputs.past_key_values
         processed_token_count = chunk_end

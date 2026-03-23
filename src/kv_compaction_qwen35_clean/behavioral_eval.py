@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from collections import Counter
 from contextlib import nullcontext
+import copy
 from dataclasses import asdict, replace
+import gc
 import json
 import re
 import time
@@ -215,6 +217,29 @@ def build_prompt_set(prompt_set: str = DEFAULT_PROMPT_SET, prompt_family: str = 
     return prompts
 
 
+def select_prompt_subset(
+    prompt_set: str,
+    prompt_family: str,
+    *,
+    prompt_limit: int | None = None,
+    prompt_labels: list[str] | None = None,
+) -> list[BehavioralPrompt]:
+    prompts = build_prompt_set(prompt_set, prompt_family)
+    if prompt_labels:
+        requested = {label for label in prompt_labels}
+        prompts = [prompt for prompt in prompts if prompt.label in requested]
+        missing = [label for label in prompt_labels if label not in {prompt.label for prompt in prompts}]
+        if missing:
+            raise ValueError(f"Unknown prompt labels: {', '.join(missing)}")
+    if prompt_limit is not None:
+        prompts = prompts[: max(0, int(prompt_limit))]
+        if not prompts:
+            raise ValueError("prompt_limit produced an empty prompt set.")
+    if not prompts:
+        raise ValueError("Prompt selection produced an empty prompt set.")
+    return prompts
+
+
 def _normalise_text(text: str) -> str:
     return re.sub(r"\s+", " ", text.strip().lower())
 
@@ -224,6 +249,9 @@ def _cleanup_generated_text(text: str) -> str:
     role_marker = re.search(r"\b(?:USER|ASSISTANT|SYSTEM|TOOL) \[[^\]]+\]", cleaned)
     if role_marker is not None:
         cleaned = cleaned[: role_marker.start()].strip()
+    dangling_role_marker = re.search(r"\b(?:USER|ASSISTANT|SYSTEM|TOOL) \[[^\n]*$", cleaned)
+    if dangling_role_marker is not None:
+        cleaned = cleaned[: dangling_role_marker.start()].strip()
     return cleaned
 
 
@@ -414,6 +442,63 @@ def _feed_tokens_with_cache(
     return outputs.past_key_values, outputs.logits[:, -1, :]
 
 
+def _clone_past_key_values(past_key_values):
+    if past_key_values is None:
+        return None
+    try:
+        import torch
+    except ImportError:
+        torch = None
+
+    def _clone_value(value):
+        if torch is not None and torch.is_tensor(value):
+            return value.clone()
+        if isinstance(value, list):
+            return [_clone_value(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(_clone_value(item) for item in value)
+        if isinstance(value, dict):
+            return {key: _clone_value(item) for key, item in value.items()}
+        if isinstance(value, (int, float, bool, str, type(None))):
+            return value
+        if hasattr(value, "__dict__"):
+            cloned = object.__new__(type(value))
+            for key, item in value.__dict__.items():
+                setattr(cloned, key, _clone_value(item))
+            return cloned
+        return copy.deepcopy(value)
+
+    return _clone_value(past_key_values)
+
+
+def _build_base_cache(
+    *,
+    model,
+    device: str,
+    prefix_cache,
+    tail_token_ids: list[int],
+    prefix_token_count: int,
+    compacted_layers,
+) -> tuple[object, int]:
+    base_cache = _clone_past_key_values(prefix_cache)
+    logical_position = prefix_token_count
+    patch_context = (
+        patched_compaction_attention(compacted_layers, prefix_token_count, model_type="qwen3_5")
+        if compacted_layers is not None
+        else nullcontext()
+    )
+    with patch_context:
+        base_cache, _ = _feed_tokens_with_cache(
+            model,
+            tail_token_ids,
+            device=device,
+            past_key_values=base_cache,
+            start_position=logical_position,
+        )
+    logical_position += len(tail_token_ids)
+    return base_cache, logical_position
+
+
 def _continue_with_prompt(
     *,
     model,
@@ -426,6 +511,8 @@ def _continue_with_prompt(
     prefix_token_count: int,
     enable_thinking: bool | None,
     max_new_tokens: int,
+    base_cache=None,
+    base_position: int | None = None,
 ) -> tuple[str, float]:
     import torch
 
@@ -437,16 +524,20 @@ def _continue_with_prompt(
     )
 
     with patch_context:
-        prefix_cache, _ = _feed_tokens_with_cache(model, prefix_token_ids, device=device)
-        logical_position = prefix_token_count
-        prefix_cache, _ = _feed_tokens_with_cache(
-            model,
-            tail_token_ids,
-            device=device,
-            past_key_values=prefix_cache,
-            start_position=logical_position,
-        )
-        logical_position += len(tail_token_ids)
+        if base_cache is not None:
+            prefix_cache = _clone_past_key_values(base_cache)
+            logical_position = int(base_position if base_position is not None else prefix_token_count + len(tail_token_ids))
+        else:
+            prefix_cache, _ = _feed_tokens_with_cache(model, prefix_token_ids, device=device)
+            logical_position = prefix_token_count
+            prefix_cache, _ = _feed_tokens_with_cache(
+                model,
+                tail_token_ids,
+                device=device,
+                past_key_values=prefix_cache,
+                start_position=logical_position,
+            )
+            logical_position += len(tail_token_ids)
 
         prompt_token_ids = build_qwen35_prompt_ids(
             tokenizer,
@@ -500,6 +591,8 @@ def _run_prompt_path(
     enable_thinking: bool | None,
     max_new_tokens: int,
     reference_runs: list[BehavioralRunResult] | None = None,
+    base_cache=None,
+    base_position: int | None = None,
 ) -> tuple[list[BehavioralRunResult], float]:
     runs: list[BehavioralRunResult] = []
     total_runtime = 0.0
@@ -515,6 +608,8 @@ def _run_prompt_path(
             prefix_token_count=prefix_token_count,
             enable_thinking=enable_thinking,
             max_new_tokens=max_new_tokens,
+            base_cache=base_cache,
+            base_position=base_position,
         )
         total_runtime += runtime
         if reference_runs is None:
@@ -536,6 +631,20 @@ def _run_prompt_path(
     return runs, total_runtime
 
 
+def _clear_cuda_memory() -> None:
+    try:
+        import torch
+    except ImportError:
+        return
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        try:
+            torch.cuda.ipc_collect()
+        except Exception:
+            pass
+
+
 def run_behavioral_evaluation(
     sample,
     config,
@@ -547,11 +656,11 @@ def run_behavioral_evaluation(
     max_new_tokens: int = MAX_NEW_TOKENS,
     probe_coverage: str = "narrow",
 ) -> BehavioralEvalResult:
-    prompts = build_prompt_set(prompt_set, sample.prompt_family)
-    if prompt_limit is not None:
-        prompts = prompts[: max(0, int(prompt_limit))]
-        if not prompts:
-            raise ValueError("prompt_limit produced an empty prompt set.")
+    prompts = select_prompt_subset(
+        prompt_set,
+        sample.prompt_family,
+        prompt_limit=prompt_limit,
+    )
     collection_config = replace(config, model=replace(config.model, attn_implementation="eager"))
     collection_model, collection_tokenizer, model_type = load_qwen35_bundle(collection_config)
     try:
@@ -571,6 +680,7 @@ def run_behavioral_evaluation(
             tokenizer=collection_tokenizer,
             probe_layers=probe_layers,
             probe_heads=probe_heads,
+            retain_runtime_cache=True,
         )
         state = build_state_from_observations(collection_config, bundle.harvest.observations)
         sketch_source = extract_query_coreset(sample.sample_id, sample.boundary.boundary_id, state, collection_config)
@@ -579,62 +689,83 @@ def run_behavioral_evaluation(
             max_entries=len(sketch_source.selected_entries),
         )
         token_ids, _ = materialize_long_context_ids(sample, collection_tokenizer)
-    finally:
-        unload_qwen35_bundle(collection_model)
+        prefix_runtime_cache = bundle.runtime_cache
+        prefix_token_ids = token_ids[: sample.boundary.prefix_token_count]
+        tail_token_ids = token_ids[sample.boundary.prefix_token_count :]
 
-    prefix_token_ids = token_ids[: sample.boundary.prefix_token_count]
-    tail_token_ids = token_ids[sample.boundary.prefix_token_count :]
+        sketch_selection, sketch_layers = build_path_runtime(
+            sample.sample_id,
+            sample.boundary.boundary_id,
+            sketch_source.source,
+            keys_per_head,
+            bundle,
+            sketch_source,
+            target_layers=probe_layers,
+            target_heads=probe_heads,
+            target_layer_heads=target_layer_heads,
+            compute_device=collection_config.model.device,
+            key_selection_method=key_selection_method,
+        )
+        control_selection, control_layers = build_path_runtime(
+            sample.sample_id,
+            sample.boundary.boundary_id,
+            control_query_source.source,
+            keys_per_head,
+            bundle,
+            control_query_source,
+            target_layers=probe_layers,
+            target_heads=probe_heads,
+            target_layer_heads=target_layer_heads,
+            compute_device=collection_config.model.device,
+            key_selection_method=key_selection_method,
+        )
 
-    reference_model, reference_tokenizer, _ = load_qwen35_bundle(config)
-    try:
+        sketch_base_cache, sketch_base_position = _build_base_cache(
+            model=collection_model,
+            device=collection_config.model.device,
+            prefix_cache=prefix_runtime_cache,
+            tail_token_ids=tail_token_ids,
+            prefix_token_count=sample.boundary.prefix_token_count,
+            compacted_layers=sketch_layers,
+        )
+        control_base_cache, control_base_position = _build_base_cache(
+            model=collection_model,
+            device=collection_config.model.device,
+            prefix_cache=prefix_runtime_cache,
+            tail_token_ids=tail_token_ids,
+            prefix_token_count=sample.boundary.prefix_token_count,
+            compacted_layers=control_layers,
+        )
+
+        bundle.runtime_cache = None
+        prefix_runtime_cache = None
+        bundle.boundary_keys = {}
+        bundle.boundary_values = {}
+        bundle.boundary_projected_values = {}
+        bundle.output_targets = {}
+        del token_ids
+        _clear_cuda_memory()
+
         reference_runs, reference_total_runtime = _run_prompt_path(
-            model=reference_model,
-            tokenizer=reference_tokenizer,
+            model=collection_model,
+            tokenizer=collection_tokenizer,
             prompts=prompts,
             prefix_token_ids=prefix_token_ids,
             tail_token_ids=tail_token_ids,
-            device=config.model.device,
+            device=collection_config.model.device,
             compacted_layers=None,
             prefix_token_count=sample.boundary.prefix_token_count,
-            enable_thinking=config.model.enable_thinking,
+            enable_thinking=collection_config.model.enable_thinking,
             max_new_tokens=max_new_tokens,
             reference_runs=None,
+            # Keep reference on fresh prefill so the eval baseline is not
+            # sensitive to chunked collection-cache differences.
+            base_cache=None,
+            base_position=None,
         )
-    finally:
-        unload_qwen35_bundle(reference_model)
-
-    sketch_selection, sketch_layers = build_path_runtime(
-        sample.sample_id,
-        sample.boundary.boundary_id,
-        sketch_source.source,
-        keys_per_head,
-        bundle,
-        sketch_source,
-        target_layers=probe_layers,
-        target_heads=probe_heads,
-        target_layer_heads=target_layer_heads,
-        compute_device=collection_config.model.device,
-        key_selection_method=key_selection_method,
-    )
-    control_selection, control_layers = build_path_runtime(
-        sample.sample_id,
-        sample.boundary.boundary_id,
-        control_query_source.source,
-        keys_per_head,
-        bundle,
-        control_query_source,
-        target_layers=probe_layers,
-        target_heads=probe_heads,
-        target_layer_heads=target_layer_heads,
-        compute_device=collection_config.model.device,
-        key_selection_method=key_selection_method,
-    )
-
-    continuation_model, continuation_tokenizer, _ = load_qwen35_bundle(collection_config)
-    try:
         sketch_runs, sketch_total_runtime = _run_prompt_path(
-            model=continuation_model,
-            tokenizer=continuation_tokenizer,
+            model=collection_model,
+            tokenizer=collection_tokenizer,
             prompts=prompts,
             prefix_token_ids=prefix_token_ids,
             tail_token_ids=tail_token_ids,
@@ -644,10 +775,12 @@ def run_behavioral_evaluation(
             enable_thinking=collection_config.model.enable_thinking,
             max_new_tokens=max_new_tokens,
             reference_runs=reference_runs,
+            base_cache=sketch_base_cache,
+            base_position=sketch_base_position,
         )
         control_runs, control_total_runtime = _run_prompt_path(
-            model=continuation_model,
-            tokenizer=continuation_tokenizer,
+            model=collection_model,
+            tokenizer=collection_tokenizer,
             prompts=prompts,
             prefix_token_ids=prefix_token_ids,
             tail_token_ids=tail_token_ids,
@@ -657,9 +790,11 @@ def run_behavioral_evaluation(
             enable_thinking=collection_config.model.enable_thinking,
             max_new_tokens=max_new_tokens,
             reference_runs=reference_runs,
+            base_cache=control_base_cache,
+            base_position=control_base_position,
         )
     finally:
-        unload_qwen35_bundle(continuation_model)
+        unload_qwen35_bundle(collection_model)
 
     return BehavioralEvalResult(
         sample_id=sample.sample_id,

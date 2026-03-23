@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass, replace
 import json
 from pathlib import Path
 
-from kv_compaction_qwen35_clean.behavioral_eval import _continue_with_prompt
+from kv_compaction_qwen35_clean.behavioral_eval import _build_base_cache, _continue_with_prompt
 from kv_compaction_qwen35_clean.boundary_collection import collect_teacher_forced_boundary_collection
 from kv_compaction_qwen35_clean.coreset import extract_query_coreset
 from kv_compaction_qwen35_clean.model_runtime import (
@@ -67,6 +67,10 @@ class ServiceDemoSession:
         tail_token_ids: list[int],
         compacted_layers,
         enable_thinking: bool | None,
+        full_base_cache,
+        full_base_position: int,
+        compact_base_cache,
+        compact_base_position: int,
         summary: ServiceDemoSummary,
     ) -> None:
         self.model = model
@@ -77,6 +81,10 @@ class ServiceDemoSession:
         self.tail_token_ids = tail_token_ids
         self.compacted_layers = compacted_layers
         self.enable_thinking = enable_thinking
+        self.full_base_cache = full_base_cache
+        self.full_base_position = full_base_position
+        self.compact_base_cache = compact_base_cache
+        self.compact_base_position = compact_base_position
         self.summary = summary
 
     def answer(self, prompt_text: str, *, compacted: bool = True, max_new_tokens: int = 40) -> tuple[str, float]:
@@ -91,6 +99,8 @@ class ServiceDemoSession:
             prefix_token_count=self.prefix_token_count,
             enable_thinking=self.enable_thinking,
             max_new_tokens=max_new_tokens,
+            base_cache=self.compact_base_cache if compacted else self.full_base_cache,
+            base_position=self.compact_base_position if compacted else self.full_base_position,
         )
 
     def close(self) -> None:
@@ -118,6 +128,7 @@ def build_service_demo_session(
             tokenizer=tokenizer,
             probe_layers=probe_layers,
             probe_heads=probe_heads,
+            retain_runtime_cache=True,
             progress_callback=progress_callback,
         )
         state = build_state_from_observations(eager_config, bundle.harvest.observations)
@@ -138,6 +149,22 @@ def build_service_demo_session(
         token_ids, _ = materialize_long_context_ids(sample, tokenizer)
         prefix_token_ids = token_ids[: sample.boundary.prefix_token_count]
         tail_token_ids = token_ids[sample.boundary.prefix_token_count :]
+        full_base_cache, full_base_position = _build_base_cache(
+            model=model,
+            device=eager_config.model.device,
+            prefix_cache=bundle.runtime_cache,
+            tail_token_ids=tail_token_ids,
+            prefix_token_count=sample.boundary.prefix_token_count,
+            compacted_layers=None,
+        )
+        compact_base_cache, compact_base_position = _build_base_cache(
+            model=model,
+            device=eager_config.model.device,
+            prefix_cache=bundle.runtime_cache,
+            tail_token_ids=tail_token_ids,
+            prefix_token_count=sample.boundary.prefix_token_count,
+            compacted_layers=compacted_layers,
+        )
         compacted_head_count = sum(len(layer_rows) for layer_rows in compacted_layers.values())
         effective_compact_tokens = sum(
             len(runtime.selected_indices)
@@ -165,6 +192,10 @@ def build_service_demo_session(
             tail_token_ids=tail_token_ids,
             compacted_layers=compacted_layers,
             enable_thinking=eager_config.model.enable_thinking,
+            full_base_cache=full_base_cache,
+            full_base_position=full_base_position,
+            compact_base_cache=compact_base_cache,
+            compact_base_position=compact_base_position,
             summary=summary,
         )
     except Exception:
