@@ -239,6 +239,40 @@ def select_long_context_capture_indices(prefix_token_count: int, stride: int = L
     return indices
 
 
+def select_boundary_biased_capture_indices(
+    prefix_token_count: int,
+    turn_spans: list[tuple[int, int, str, str]],
+    *,
+    lookback_turns: int = 3,
+    stride: int = LONG_CONTEXT_TOKEN_STRIDE,
+) -> list[int]:
+    if prefix_token_count <= 1:
+        return []
+    if not turn_spans:
+        return select_long_context_capture_indices(prefix_token_count, stride=stride)
+
+    eligible_turn_spans: list[tuple[int, int]] = []
+    for start, end, _turn_id, _speaker in turn_spans:
+        start = max(0, int(start))
+        end = min(prefix_token_count, int(end))
+        if start >= prefix_token_count:
+            break
+        if end <= start:
+            continue
+        eligible_turn_spans.append((start, end))
+    if not eligible_turn_spans:
+        return select_long_context_capture_indices(prefix_token_count, stride=stride)
+
+    selected_turn_spans = eligible_turn_spans[-max(1, int(lookback_turns)) :]
+    indices: set[int] = set()
+    for turn_start, turn_end in selected_turn_spans:
+        local_indices = list(range(turn_start + stride - 1, turn_end, stride))
+        if not local_indices or local_indices[-1] != turn_end - 1:
+            local_indices.append(turn_end - 1)
+        indices.update(index for index in local_indices if 0 <= index < prefix_token_count)
+    return sorted(indices)
+
+
 def _capture_chunks(capture_indices: list[int], *, max_chunk_size: int) -> list[tuple[int, int]]:
     if not capture_indices:
         return []

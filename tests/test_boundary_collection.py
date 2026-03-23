@@ -9,6 +9,7 @@ from kv_compaction_qwen35_clean.boundary_collection import (
     AttentionTraceChunkBuffer,
     _build_capture_rows_from_trace_payload,
     load_boundary_collection,
+    select_boundary_biased_capture_indices,
     select_long_context_capture_indices,
     write_boundary_collection,
 )
@@ -27,6 +28,32 @@ def test_select_long_context_capture_indices_includes_last_prefix_token() -> Non
     assert select_long_context_capture_indices(1) == []
     assert select_long_context_capture_indices(512) == [255, 511]
     assert select_long_context_capture_indices(7168)[-1] == 7167
+
+
+def test_select_boundary_biased_capture_indices_prefers_last_turns() -> None:
+    turn_spans = [
+        (0, 512, "turn_0", "system"),
+        (512, 1536, "turn_1", "tool"),
+        (1536, 2560, "turn_2", "tool"),
+        (2560, 3328, "turn_3", "assistant"),
+        (3328, 4608, "turn_4", "tool"),
+        (4608, 5504, "turn_5", "user"),
+        (5504, 6912, "turn_6", "assistant"),
+        (6912, 7168, "turn_7", "tool"),
+    ]
+
+    indices = select_boundary_biased_capture_indices(7168, turn_spans, lookback_turns=3)
+
+    assert indices[0] >= 4608
+    assert 5503 in indices
+    assert 6911 in indices
+    assert 7167 in indices
+
+
+def test_select_boundary_biased_capture_indices_falls_back_without_turns() -> None:
+    indices = select_boundary_biased_capture_indices(1024, [], lookback_turns=2, stride=256)
+
+    assert indices == [255, 511, 767, 1023]
 
 
 def test_write_and_load_boundary_collection_roundtrip(tmp_path: Path) -> None:
