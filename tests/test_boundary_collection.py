@@ -9,6 +9,7 @@ from kv_compaction_qwen35_clean.boundary_collection import (
     AttentionTraceChunkBuffer,
     _build_capture_rows_from_trace_payload,
     load_boundary_collection,
+    resolve_replay_checkpoint_start,
     select_boundary_biased_capture_indices,
     select_long_context_capture_indices,
     write_boundary_collection,
@@ -54,6 +55,22 @@ def test_select_boundary_biased_capture_indices_falls_back_without_turns() -> No
     indices = select_boundary_biased_capture_indices(1024, [], lookback_turns=2, stride=256)
 
     assert indices == [255, 511, 767, 1023]
+
+
+def test_resolve_replay_checkpoint_start_uses_turn_boundary_before_first_capture() -> None:
+    turn_spans = [
+        (0, 512, "turn_0", "system"),
+        (512, 1536, "turn_1", "tool"),
+        (1536, 2560, "turn_2", "tool"),
+        (2560, 3328, "turn_3", "assistant"),
+        (3328, 4608, "turn_4", "tool"),
+        (4608, 5504, "turn_5", "user"),
+        (5504, 6912, "turn_6", "assistant"),
+        (6912, 7168, "turn_7", "tool"),
+    ]
+
+    assert resolve_replay_checkpoint_start([4863, 5119, 7167], turn_spans) == 4608
+    assert resolve_replay_checkpoint_start([255, 511], turn_spans) == 0
 
 
 def test_write_and_load_boundary_collection_roundtrip(tmp_path: Path) -> None:

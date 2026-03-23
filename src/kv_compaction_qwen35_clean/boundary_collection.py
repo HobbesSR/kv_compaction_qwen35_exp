@@ -274,6 +274,25 @@ def select_boundary_biased_capture_indices(
     return sorted(indices)
 
 
+def resolve_replay_checkpoint_start(
+    capture_indices: list[int],
+    turn_spans: list[tuple[int, int, str, str]],
+) -> int:
+    if not capture_indices:
+        return 0
+    first_capture_index = min(int(index) for index in capture_indices)
+    checkpoint_start = 0
+    for start, end, _turn_id, _speaker in turn_spans:
+        start = int(start)
+        end = int(end)
+        if start <= first_capture_index < end:
+            checkpoint_start = start
+            break
+        if end <= first_capture_index:
+            checkpoint_start = end
+    return checkpoint_start
+
+
 def _capture_chunks(capture_indices: list[int], *, max_chunk_size: int) -> list[tuple[int, int]]:
     if not capture_indices:
         return []

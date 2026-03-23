@@ -13,6 +13,7 @@ from kv_compaction_qwen35_clean.behavioral_eval import (
 )
 from kv_compaction_qwen35_clean.boundary_collection import (
     collect_teacher_forced_boundary_collection,
+    resolve_replay_checkpoint_start,
     select_boundary_biased_capture_indices,
 )
 from kv_compaction_qwen35_clean.config import load_config
@@ -41,9 +42,10 @@ def _checkpoint_for_capture_indices(
 ) -> dict[str, object] | None:
     if not capture_indices:
         return None
+    checkpoint_start = resolve_replay_checkpoint_start(capture_indices, turn_spans)
     first_capture_index = min(int(index) for index in capture_indices)
     for start, end, turn_id, speaker in turn_spans:
-        if int(start) <= first_capture_index < int(end):
+        if int(start) == checkpoint_start:
             return {
                 "turn_id": str(turn_id),
                 "speaker": str(speaker),
