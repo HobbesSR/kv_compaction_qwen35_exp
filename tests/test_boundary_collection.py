@@ -158,6 +158,34 @@ def test_attention_trace_chunk_buffer_roundtrip() -> None:
     assert payload["raw_outputs"].tolist() == [[5.0, 6.0], [7.0, 8.0]]
 
 
+def test_attention_trace_chunk_buffer_filters_absolute_positions() -> None:
+    buffer = AttentionTraceChunkBuffer(capacity=4, query_length=4, tracked_absolute_positions={11, 13})
+    buffer.add_query_position(
+        query_position=0,
+        absolute_query_position=10,
+        layer_indices=torch.tensor([3], dtype=torch.long),
+        head_indices=torch.tensor([0], dtype=torch.long),
+        prefix_mass_shares=torch.tensor([0.25], dtype=torch.float32),
+        raw_query_vectors=torch.tensor([[1.0, 2.0]], dtype=torch.float32),
+        raw_outputs=torch.tensor([[5.0, 6.0]], dtype=torch.float32),
+    )
+    buffer.add_query_position(
+        query_position=1,
+        absolute_query_position=11,
+        layer_indices=torch.tensor([7], dtype=torch.long),
+        head_indices=torch.tensor([7], dtype=torch.long),
+        prefix_mass_shares=torch.tensor([0.75], dtype=torch.float32),
+        raw_query_vectors=torch.tensor([[3.0, 4.0]], dtype=torch.float32),
+        raw_outputs=torch.tensor([[7.0, 8.0]], dtype=torch.float32),
+    )
+
+    assert buffer.snapshot_for_query_position(10) is None
+    payload = buffer.snapshot_for_query_position(11)
+    assert payload is not None
+    assert payload["layer_indices"].tolist() == [7]
+    assert payload["head_indices"].tolist() == [7]
+
+
 def test_build_capture_rows_from_trace_payload() -> None:
     config = load_config("configs/qwen35_smoke/qwen3_5_9b.yaml")
     rows = _build_capture_rows_from_trace_payload(

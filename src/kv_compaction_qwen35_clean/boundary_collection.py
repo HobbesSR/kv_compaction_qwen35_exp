@@ -32,24 +32,32 @@ CAPTURE_ATTENTION_CHUNK_SIZE = 32
 class AttentionTraceChunkBuffer:
     capacity: int
     query_length: int
+    tracked_absolute_positions: set[int] | None = None
     count: int = 0
     layer_indices: object | None = None
     head_indices: object | None = None
     prefix_mass_shares: object | None = None
     raw_query_vectors: object | None = None
     raw_outputs: object | None = None
-    query_segments: list[list[tuple[int, int]]] = field(default_factory=list)
+    query_segments: dict[int, list[tuple[int, int]]] = field(default_factory=dict)
 
     def add_query_position(
         self,
         *,
         query_position: int,
+        absolute_query_position: int | None = None,
         layer_indices,
         head_indices,
         prefix_mass_shares,
         raw_query_vectors,
         raw_outputs,
     ) -> None:
+        absolute_query_position = int(query_position if absolute_query_position is None else absolute_query_position)
+        if (
+            self.tracked_absolute_positions is not None
+            and absolute_query_position not in self.tracked_absolute_positions
+        ):
+            return
         row_count = int(layer_indices.shape[0])
         start_index = self.count
         end_index = start_index + row_count
@@ -69,20 +77,16 @@ class AttentionTraceChunkBuffer:
             self.prefix_mass_shares[start_index:end_index].copy_(prefix_mass_shares.detach())
             self.raw_query_vectors[start_index:end_index].copy_(raw_query_vectors.detach())
             self.raw_outputs[start_index:end_index].copy_(raw_outputs.detach())
-        query_position = int(query_position)
-        while len(self.query_segments) <= query_position:
-            self.query_segments.append([])
-        self.query_segments[query_position].append((start_index, end_index))
+        self.query_segments.setdefault(absolute_query_position, []).append((start_index, end_index))
         self.count = end_index
 
     def snapshot_for_query_position(self, query_position: int):
         if self.count <= 0 or self.layer_indices is None:
             return None
-        if not 0 <= int(query_position) < len(self.query_segments):
-            return None
+        query_position = int(query_position)
         segments = [
             (start_index, end_index)
-            for start_index, end_index in self.query_segments[int(query_position)]
+            for start_index, end_index in self.query_segments.get(query_position, [])
             if end_index > start_index
         ]
         if not segments:
@@ -540,6 +544,8 @@ def _can_use_qwen35_trace_prompt_capture(model) -> bool:
 def _patched_qwen35_attention_trace_chunk(
     trace_layer_heads: tuple[tuple[int, int], ...],
     trace_buffer: AttentionTraceChunkBuffer,
+    *,
+    chunk_start_position: int,
 ):
     import torch
 
@@ -594,10 +600,12 @@ def _patched_qwen35_attention_trace_chunk(
         layer_tensor = torch.full_like(head_index_tensor, int(module.layer_idx))
 
         for query_position in range(query_length):
+            absolute_query_position = int(chunk_start_position) + query_position
             prefix_length = prefix_before_chunk + query_position
             if prefix_length <= 0:
                 trace_buffer.add_query_position(
                     query_position=query_position,
+                    absolute_query_position=absolute_query_position,
                     layer_indices=layer_tensor[:0],
                     head_indices=head_index_tensor[:0],
                     prefix_mass_shares=selected_queries.new_empty((0,)),
@@ -612,6 +620,7 @@ def _patched_qwen35_attention_trace_chunk(
             prefix_outputs = torch.bmm(weight_rows.unsqueeze(1), value_rows).squeeze(1)
             trace_buffer.add_query_position(
                 query_position=query_position,
+                absolute_query_position=absolute_query_position,
                 layer_indices=layer_tensor,
                 head_indices=head_index_tensor,
                 prefix_mass_shares=prefix_mass_shares,
@@ -701,158 +710,114 @@ def _collect_boundary_collection_with_model(
         for layer_index, layer_probe_heads in sorted(probe_head_map.items())
         for head_index in layer_probe_heads
     )
+    capture_index_set = set(capture_indices)
     past_key_values = None
     processed_token_count = 0
-
-    for capture_start, capture_end in _capture_chunks(
-        capture_indices,
-        max_chunk_size=min(int(config.model.prefill_chunk_size), CAPTURE_ATTENTION_CHUNK_SIZE),
-    ):
-        while processed_token_count < capture_start:
-            chunk_end = min(capture_start, processed_token_count + int(config.model.prefill_chunk_size))
-            chunk_input_ids = full_input_ids[:, processed_token_count:chunk_end]
-            cache_position = torch.arange(
-                processed_token_count,
-                chunk_end,
-                device=config.model.device,
-                dtype=torch.long,
-            )
-            with torch.inference_mode():
-                bulk_outputs = model(
-                    input_ids=chunk_input_ids,
-                    past_key_values=past_key_values,
-                    use_cache=True,
-                    return_dict=True,
-                    cache_position=cache_position,
-                )
-            past_key_values = bulk_outputs.past_key_values
-            processed_token_count = chunk_end
-            if progress_callback is not None:
-                progress_callback(
-                    {
-                        "stage": "prefill",
-                        "processed_token_count": processed_token_count,
-                        "prefix_token_count": prefix_token_count,
-                    }
-                )
-
-        capture_token_ids = full_input_ids[:, capture_start:capture_end]
+    while processed_token_count < prefix_token_count:
+        chunk_end = min(prefix_token_count, processed_token_count + int(config.model.prefill_chunk_size))
+        chunk_input_ids = full_input_ids[:, processed_token_count:chunk_end]
+        chunk_indices = list(range(processed_token_count, chunk_end))
+        overlapping_capture_indices = [index for index in chunk_indices if index in capture_index_set]
         trace_buffer = None
         patch_context = nullcontext()
         capture_kwargs = {
-            "input_ids": capture_token_ids,
+            "input_ids": chunk_input_ids,
             "past_key_values": past_key_values,
             "use_cache": True,
             "return_dict": True,
             "cache_position": torch.arange(
-                capture_start,
-                capture_end,
+                processed_token_count,
+                chunk_end,
                 device=config.model.device,
                 dtype=torch.long,
             ),
         }
-        if use_trace_prompt_capture:
-            trace_buffer = AttentionTraceChunkBuffer(
-                capacity=max(1, len(trace_layer_heads) * max(1, capture_end - capture_start)),
-                query_length=max(1, capture_end - capture_start),
-            )
-            patch_context = _patched_qwen35_attention_trace_chunk(trace_layer_heads, trace_buffer)
-        else:
-            capture_kwargs["output_hidden_states"] = True
-            capture_kwargs["output_attentions"] = True
+        if overlapping_capture_indices:
+            if use_trace_prompt_capture:
+                trace_buffer = AttentionTraceChunkBuffer(
+                    capacity=max(1, len(trace_layer_heads) * max(1, len(overlapping_capture_indices))),
+                    query_length=max(1, chunk_end - processed_token_count),
+                    tracked_absolute_positions=set(overlapping_capture_indices),
+                )
+                patch_context = _patched_qwen35_attention_trace_chunk(
+                    trace_layer_heads,
+                    trace_buffer,
+                    chunk_start_position=processed_token_count,
+                )
+            else:
+                capture_kwargs["output_hidden_states"] = True
+                capture_kwargs["output_attentions"] = True
         with torch.inference_mode():
             with patch_context:
-                capture_outputs = model(**capture_kwargs)
+                chunk_outputs = model(**capture_kwargs)
 
-        for query_position, capture_index in enumerate(range(capture_start, capture_end)):
-            source_turn_id, source_speaker = _turn_for_token_index(capture_index, turn_spans)
-            rows = (
-                _build_capture_rows_from_trace_payload(
-                    trace_payload=(trace_buffer.snapshot_for_query_position(query_position) if trace_buffer is not None else None),
-                    token_index=capture_index,
-                    config=config,
-                )
-                if use_trace_prompt_capture
-                else _build_capture_rows(
-                    model=model,
-                    outputs=capture_outputs,
-                    token_index=capture_index,
-                    query_position=query_position,
-                    config=config,
-                    probe_head_map=probe_head_map,
-                )
-            )
-            for row in rows:
-                observations.append(
-                    FeatureObservation(
+        if overlapping_capture_indices:
+            for capture_index in overlapping_capture_indices:
+                query_position = capture_index - processed_token_count
+                source_turn_id, source_speaker = _turn_for_token_index(capture_index, turn_spans)
+                rows = (
+                    _build_capture_rows_from_trace_payload(
+                        trace_payload=(
+                            trace_buffer.snapshot_for_query_position(capture_index)
+                            if trace_buffer is not None
+                            else None
+                        ),
                         token_index=capture_index,
-                        layer=int(row["layer"]),
-                        head=int(row["head"]),
-                        tap_point=config.feature_schema.tap_point,
-                        query_projection=list(row["query_projection"]),
-                        prefix_mass_share=float(row["prefix_mass_share"]),
-                        raw_prefix_mass=float(row["raw_prefix_mass"]),
-                        output_projection=list(row["output_projection"]),
-                        source_turn_id=source_turn_id,
-                        source_speaker=source_speaker,
+                        config=config,
+                    )
+                    if use_trace_prompt_capture
+                    else _build_capture_rows(
+                        model=model,
+                        outputs=chunk_outputs,
+                        token_index=capture_index,
+                        query_position=query_position,
+                        config=config,
+                        probe_head_map=probe_head_map,
                     )
                 )
-                query_samples.append(
-                    QuerySample(
-                        query_id=f"{sample.sample_id}:{row['layer']}:{row['head']}:{capture_index}",
-                        layer=int(row["layer"]),
-                        head=int(row["head"]),
-                        token_index=capture_index,
-                        prefix_mass_share=float(row["prefix_mass_share"]),
-                        raw_prefix_mass=float(row["raw_prefix_mass"]),
-                        query_projection=list(row["query_projection"]),
-                        raw_query_vector=list(row["raw_query_vector"]),
-                        source_turn_id=source_turn_id,
-                        source_speaker=source_speaker,
+                for row in rows:
+                    observations.append(
+                        FeatureObservation(
+                            token_index=capture_index,
+                            layer=int(row["layer"]),
+                            head=int(row["head"]),
+                            tap_point=config.feature_schema.tap_point,
+                            query_projection=list(row["query_projection"]),
+                            prefix_mass_share=float(row["prefix_mass_share"]),
+                            raw_prefix_mass=float(row["raw_prefix_mass"]),
+                            output_projection=list(row["output_projection"]),
+                            source_turn_id=source_turn_id,
+                            source_speaker=source_speaker,
+                        )
                     )
-                )
-                output_targets[(int(row["layer"]), int(row["head"]), int(capture_index))] = list(row["raw_output"])
+                    query_samples.append(
+                        QuerySample(
+                            query_id=f"{sample.sample_id}:{row['layer']}:{row['head']}:{capture_index}",
+                            layer=int(row["layer"]),
+                            head=int(row["head"]),
+                            token_index=capture_index,
+                            prefix_mass_share=float(row["prefix_mass_share"]),
+                            raw_prefix_mass=float(row["raw_prefix_mass"]),
+                            query_projection=list(row["query_projection"]),
+                            raw_query_vector=list(row["raw_query_vector"]),
+                            source_turn_id=source_turn_id,
+                            source_speaker=source_speaker,
+                        )
+                    )
+                    output_targets[(int(row["layer"]), int(row["head"]), int(capture_index))] = list(row["raw_output"])
 
-        past_key_values = capture_outputs.past_key_values
-        processed_token_count = capture_end
-        if progress_callback is not None:
-            progress_callback(
-                {
-                    "stage": "capture",
-                    "processed_token_count": processed_token_count,
-                    "prefix_token_count": prefix_token_count,
-                    "monitored_observation_count": len(observations),
-                    "monitored_query_sample_count": len(query_samples),
-                }
-            )
-
-    while processed_token_count < prefix_token_count:
-        chunk_end = min(prefix_token_count, processed_token_count + int(config.model.prefill_chunk_size))
-        chunk_input_ids = full_input_ids[:, processed_token_count:chunk_end]
-        cache_position = torch.arange(
-            processed_token_count,
-            chunk_end,
-            device=config.model.device,
-            dtype=torch.long,
-        )
-        with torch.inference_mode():
-            bulk_outputs = model(
-                input_ids=chunk_input_ids,
-                past_key_values=past_key_values,
-                use_cache=True,
-                return_dict=True,
-                cache_position=cache_position,
-            )
-        past_key_values = bulk_outputs.past_key_values
+        past_key_values = chunk_outputs.past_key_values
         processed_token_count = chunk_end
         if progress_callback is not None:
-            progress_callback(
-                {
-                    "stage": "prefill",
-                    "processed_token_count": processed_token_count,
-                    "prefix_token_count": prefix_token_count,
-                }
-            )
+            payload = {
+                "stage": "capture" if overlapping_capture_indices else "prefill",
+                "processed_token_count": processed_token_count,
+                "prefix_token_count": prefix_token_count,
+            }
+            if overlapping_capture_indices:
+                payload["monitored_observation_count"] = len(observations)
+                payload["monitored_query_sample_count"] = len(query_samples)
+            progress_callback(payload)
 
     if past_key_values is None:
         raise ValueError("Boundary collection did not produce a final cache.")

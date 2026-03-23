@@ -11,15 +11,15 @@
     "qwen35_branch_switch_appendix_details"
   ],
   "reference": {
-    "runtime_seconds": 53.494985,
+    "runtime_seconds": 41.118896,
     "preserved_central_detail_count": 4,
     "omitted_central_detail_count": 0,
     "hallucination_run_count": 0,
     "effective_compact_tokens": 0
   },
   "sketch": {
-    "path": "sketch",
-    "runtime_seconds": 54.269522,
+    "path": "prototype_bank",
+    "runtime_seconds": 10.926923,
     "preserved_central_detail_count": 4,
     "omitted_central_detail_count": 0,
     "hallucination_run_count": 0,
@@ -27,8 +27,8 @@
     "compacted_head_count": 16
   },
   "control": {
-    "path": "control",
-    "runtime_seconds": 50.569344,
+    "path": "teacher_forced_subsample",
+    "runtime_seconds": 10.864395,
     "preserved_central_detail_count": 3,
     "omitted_central_detail_count": 1,
     "hallucination_run_count": 0,
