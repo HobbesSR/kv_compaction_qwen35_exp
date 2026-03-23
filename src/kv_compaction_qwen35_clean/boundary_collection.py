@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from importlib import import_module
@@ -305,6 +306,35 @@ def _resolve_probe_layer_heads(
     for layer, head in probe_layer_heads:
         layer_to_heads.setdefault(int(layer), []).append(int(head))
     return {layer: tuple(dict.fromkeys(heads)) for layer, heads in layer_to_heads.items()}
+
+
+def _clone_past_key_values(past_key_values):
+    if past_key_values is None:
+        return None
+    try:
+        import torch
+    except ImportError:
+        torch = None
+
+    def _clone_value(value):
+        if torch is not None and torch.is_tensor(value):
+            return value.clone()
+        if isinstance(value, list):
+            return [_clone_value(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(_clone_value(item) for item in value)
+        if isinstance(value, dict):
+            return {key: _clone_value(item) for key, item in value.items()}
+        if isinstance(value, (int, float, bool, str, type(None))):
+            return value
+        if hasattr(value, "__dict__"):
+            cloned = object.__new__(type(value))
+            for key, item in value.__dict__.items():
+                setattr(cloned, key, _clone_value(item))
+            return cloned
+        return copy.deepcopy(value)
+
+    return _clone_value(past_key_values)
 
 
 def _attention_block_for_layer(model, layer_index: int):
@@ -683,6 +713,8 @@ def collect_teacher_forced_boundary_collection(
     retain_runtime_cache: bool = False,
     materialize_boundary_kv: bool = True,
     progress_callback=None,
+    initial_past_key_values=None,
+    replay_start_position: int = 0,
 ) -> BoundaryCollection:
     created_model = False
     model_type = "qwen3_5"
@@ -705,6 +737,8 @@ def collect_teacher_forced_boundary_collection(
             retain_runtime_cache=retain_runtime_cache,
             materialize_boundary_kv=materialize_boundary_kv,
             progress_callback=progress_callback,
+            initial_past_key_values=initial_past_key_values,
+            replay_start_position=replay_start_position,
         )
     finally:
         if created_model:
@@ -724,15 +758,27 @@ def _collect_boundary_collection_with_model(
     retain_runtime_cache: bool,
     materialize_boundary_kv: bool,
     progress_callback,
+    initial_past_key_values,
+    replay_start_position: int,
 ) -> BoundaryCollection:
     import torch
 
     token_ids, turn_spans = materialize_long_context_ids(sample, tokenizer)
     prefix_token_count = int(sample.boundary.prefix_token_count)
-    full_input_ids = torch.tensor([token_ids[:prefix_token_count]], device=config.model.device, dtype=torch.long)
+    replay_start_position = int(replay_start_position)
+    if replay_start_position < 0 or replay_start_position > prefix_token_count:
+        raise ValueError(
+            f"replay_start_position must be within [0, {prefix_token_count}], got {replay_start_position}."
+        )
+    if replay_start_position > 0 and initial_past_key_values is None:
+        raise ValueError("initial_past_key_values is required when replay_start_position > 0.")
+    replay_token_ids = token_ids[replay_start_position:prefix_token_count]
+    full_input_ids = torch.tensor([replay_token_ids], device=config.model.device, dtype=torch.long)
     if capture_indices is None:
         capture_indices = select_long_context_capture_indices(prefix_token_count)
     capture_indices = sorted({int(index) for index in capture_indices if 0 <= int(index) < prefix_token_count})
+    if replay_start_position > 0 and any(index < replay_start_position for index in capture_indices):
+        raise ValueError("capture_indices before replay_start_position cannot be collected from a replay start cache.")
 
     observations: list[FeatureObservation] = []
     query_samples: list[QuerySample] = []
@@ -745,11 +791,13 @@ def _collect_boundary_collection_with_model(
         for head_index in layer_probe_heads
     )
     capture_index_set = set(capture_indices)
-    past_key_values = None
-    processed_token_count = 0
+    past_key_values = _clone_past_key_values(initial_past_key_values)
+    processed_token_count = replay_start_position
     while processed_token_count < prefix_token_count:
         chunk_end = min(prefix_token_count, processed_token_count + int(config.model.prefill_chunk_size))
-        chunk_input_ids = full_input_ids[:, processed_token_count:chunk_end]
+        local_start = processed_token_count - replay_start_position
+        local_end = chunk_end - replay_start_position
+        chunk_input_ids = full_input_ids[:, local_start:local_end]
         chunk_indices = list(range(processed_token_count, chunk_end))
         overlapping_capture_indices = [index for index in chunk_indices if index in capture_index_set]
         trace_buffer = None
