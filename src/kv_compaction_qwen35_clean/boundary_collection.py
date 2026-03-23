@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from contextlib import contextmanager, nullcontext
+from dataclasses import dataclass, field
+from importlib import import_module
 import json
 from pathlib import Path
 
@@ -23,6 +26,101 @@ from kv_compaction_qwen35_clean.model_runtime import (
 
 LONG_CONTEXT_TOKEN_STRIDE = 256
 CAPTURE_ATTENTION_CHUNK_SIZE = 32
+
+
+@dataclass
+class AttentionTraceChunkBuffer:
+    capacity: int
+    query_length: int
+    count: int = 0
+    layer_indices: object | None = None
+    head_indices: object | None = None
+    prefix_mass_shares: object | None = None
+    raw_query_vectors: object | None = None
+    raw_outputs: object | None = None
+    query_segments: list[list[tuple[int, int]]] = field(default_factory=list)
+
+    def add_query_position(
+        self,
+        *,
+        query_position: int,
+        layer_indices,
+        head_indices,
+        prefix_mass_shares,
+        raw_query_vectors,
+        raw_outputs,
+    ) -> None:
+        row_count = int(layer_indices.shape[0])
+        start_index = self.count
+        end_index = start_index + row_count
+        if end_index > self.capacity:
+            raise ValueError(
+                f"AttentionTraceChunkBuffer overflow: {end_index} rows exceeds capacity {self.capacity}."
+            )
+        if row_count > 0 and self.layer_indices is None:
+            self.layer_indices = layer_indices.detach().new_empty((self.capacity,))
+            self.head_indices = head_indices.detach().new_empty((self.capacity,))
+            self.prefix_mass_shares = prefix_mass_shares.detach().new_empty((self.capacity,))
+            self.raw_query_vectors = raw_query_vectors.detach().new_empty((self.capacity, raw_query_vectors.shape[-1]))
+            self.raw_outputs = raw_outputs.detach().new_empty((self.capacity, raw_outputs.shape[-1]))
+        if row_count > 0:
+            self.layer_indices[start_index:end_index].copy_(layer_indices.detach())
+            self.head_indices[start_index:end_index].copy_(head_indices.detach())
+            self.prefix_mass_shares[start_index:end_index].copy_(prefix_mass_shares.detach())
+            self.raw_query_vectors[start_index:end_index].copy_(raw_query_vectors.detach())
+            self.raw_outputs[start_index:end_index].copy_(raw_outputs.detach())
+        query_position = int(query_position)
+        while len(self.query_segments) <= query_position:
+            self.query_segments.append([])
+        self.query_segments[query_position].append((start_index, end_index))
+        self.count = end_index
+
+    def snapshot_for_query_position(self, query_position: int):
+        if self.count <= 0 or self.layer_indices is None:
+            return None
+        if not 0 <= int(query_position) < len(self.query_segments):
+            return None
+        segments = [
+            (start_index, end_index)
+            for start_index, end_index in self.query_segments[int(query_position)]
+            if end_index > start_index
+        ]
+        if not segments:
+            return None
+        if len(segments) == 1:
+            start_index, end_index = segments[0]
+            return {
+                "layer_indices": self.layer_indices[start_index:end_index],
+                "head_indices": self.head_indices[start_index:end_index],
+                "prefix_mass_shares": self.prefix_mass_shares[start_index:end_index],
+                "raw_query_vectors": self.raw_query_vectors[start_index:end_index],
+                "raw_outputs": self.raw_outputs[start_index:end_index],
+            }
+
+        import torch
+
+        return {
+            "layer_indices": torch.cat(
+                [self.layer_indices[start_index:end_index] for start_index, end_index in segments],
+                dim=0,
+            ),
+            "head_indices": torch.cat(
+                [self.head_indices[start_index:end_index] for start_index, end_index in segments],
+                dim=0,
+            ),
+            "prefix_mass_shares": torch.cat(
+                [self.prefix_mass_shares[start_index:end_index] for start_index, end_index in segments],
+                dim=0,
+            ),
+            "raw_query_vectors": torch.cat(
+                [self.raw_query_vectors[start_index:end_index] for start_index, end_index in segments],
+                dim=0,
+            ),
+            "raw_outputs": torch.cat(
+                [self.raw_outputs[start_index:end_index] for start_index, end_index in segments],
+                dim=0,
+            ),
+        }
 
 
 def _serialize_pair_map(mapping: dict[tuple[int, int], list[list[float]]]) -> list[dict[str, object]]:
@@ -269,6 +367,55 @@ def _project_vector(vector, output_dim: int, seed: int) -> list[float]:
     return _rounded_tensor_rows_to_lists(projected.unsqueeze(0))[0]
 
 
+def _build_capture_rows_from_trace_payload(
+    *,
+    trace_payload,
+    token_index: int,
+    config: SmokeTestConfig,
+):
+    if not trace_payload:
+        return []
+
+    layer_indices = trace_payload["layer_indices"]
+    head_indices = trace_payload["head_indices"]
+    prefix_mass_shares = trace_payload["prefix_mass_shares"]
+    raw_query_vectors = trace_payload["raw_query_vectors"]
+    raw_outputs = trace_payload["raw_outputs"]
+    if layer_indices.numel() == 0:
+        return []
+
+    rows = []
+    for row_index in range(int(layer_indices.shape[0])):
+        layer = int(layer_indices[row_index].item())
+        head = int(head_indices[row_index].item())
+        raw_query = raw_query_vectors[row_index]
+        raw_output = raw_outputs[row_index]
+        prefix_mass_share = round(float(prefix_mass_shares[row_index].item()), 6)
+        if prefix_mass_share <= 0.0:
+            continue
+        rows.append(
+            {
+                "layer": layer,
+                "head": head,
+                "prefix_mass_share": prefix_mass_share,
+                "raw_prefix_mass": round(float(token_index * prefix_mass_share), 6),
+                "query_projection": _project_vector(
+                    raw_query,
+                    config.feature_schema.query_projection_dim,
+                    config.experiment.seed + layer,
+                ),
+                "raw_query_vector": _rounded_tensor_to_list(raw_query),
+                "output_projection": _project_vector(
+                    raw_output,
+                    config.feature_schema.output_projection_dim,
+                    config.experiment.seed + 10_000 + layer,
+                ),
+                "raw_output": _rounded_tensor_to_list(raw_output),
+            }
+        )
+    return rows
+
+
 def _attention_query_states(attention_block, layer_inputs, num_heads: int):
     import torch
 
@@ -383,6 +530,103 @@ def _build_capture_rows(
     return rows
 
 
+def _can_use_qwen35_trace_prompt_capture(model) -> bool:
+    base_model = getattr(model, "model", None)
+    attn_impl = str(getattr(model.config, "_attn_implementation", "") or "")
+    return base_model is not None and hasattr(base_model, "layers") and attn_impl == "eager"
+
+
+@contextmanager
+def _patched_qwen35_attention_trace_chunk(
+    trace_layer_heads: tuple[tuple[int, int], ...],
+    trace_buffer: AttentionTraceChunkBuffer,
+):
+    import torch
+
+    modeling_qwen35 = import_module("transformers.models.qwen3_5.modeling_qwen3_5")
+    original_attention = modeling_qwen35.eager_attention_forward
+    layer_head_map: dict[int, tuple[int, ...]] = {}
+    for layer, head in trace_layer_heads:
+        layer_head_map.setdefault(int(layer), []).append(int(head))
+
+    head_index_cache: dict[tuple[int, str], torch.Tensor] = {}
+
+    def traced_attention_forward(
+        module,
+        query,
+        key,
+        value,
+        attention_mask,
+        scaling,
+        dropout=0.0,
+        **kwargs,
+    ):
+        attn_output, attn_weights = original_attention(
+            module,
+            query,
+            key,
+            value,
+            attention_mask,
+            scaling=scaling,
+            dropout=dropout,
+            **kwargs,
+        )
+        if attn_weights is None:
+            return attn_output, attn_weights
+        layer_probe_heads = layer_head_map.get(int(module.layer_idx))
+        if not layer_probe_heads:
+            return attn_output, attn_weights
+
+        cache_key = (int(module.layer_idx), str(query.device))
+        head_index_tensor = head_index_cache.get(cache_key)
+        if head_index_tensor is None:
+            head_index_tensor = torch.tensor(layer_probe_heads, device=query.device, dtype=torch.long)
+            head_index_cache[cache_key] = head_index_tensor
+
+        value_states = modeling_qwen35.repeat_kv(value, module.num_key_value_groups)
+        query_length = int(query.shape[2])
+        total_key_length = int(value_states.shape[2])
+        prefix_before_chunk = max(0, total_key_length - query_length)
+
+        selected_queries = query[0].index_select(0, head_index_tensor)
+        selected_weights = attn_weights[0].index_select(0, head_index_tensor)
+        selected_values = value_states[0].index_select(0, head_index_tensor)
+        layer_tensor = torch.full_like(head_index_tensor, int(module.layer_idx))
+
+        for query_position in range(query_length):
+            prefix_length = prefix_before_chunk + query_position
+            if prefix_length <= 0:
+                trace_buffer.add_query_position(
+                    query_position=query_position,
+                    layer_indices=layer_tensor[:0],
+                    head_indices=head_index_tensor[:0],
+                    prefix_mass_shares=selected_queries.new_empty((0,)),
+                    raw_query_vectors=selected_queries[:, query_position, :][:0],
+                    raw_outputs=selected_queries[:, query_position, :][:0],
+                )
+                continue
+            query_rows = selected_queries[:, query_position, :]
+            weight_rows = selected_weights[:, query_position, :prefix_length]
+            value_rows = selected_values[:, :prefix_length, :]
+            prefix_mass_shares = weight_rows.sum(dim=1)
+            prefix_outputs = torch.bmm(weight_rows.unsqueeze(1), value_rows).squeeze(1)
+            trace_buffer.add_query_position(
+                query_position=query_position,
+                layer_indices=layer_tensor,
+                head_indices=head_index_tensor,
+                prefix_mass_shares=prefix_mass_shares,
+                raw_query_vectors=query_rows,
+                raw_outputs=prefix_outputs,
+            )
+        return attn_output, attn_weights
+
+    modeling_qwen35.eager_attention_forward = traced_attention_forward
+    try:
+        yield
+    finally:
+        modeling_qwen35.eager_attention_forward = original_attention
+
+
 def collect_teacher_forced_boundary_collection(
     sample: LoadedContextSample,
     config: SmokeTestConfig,
@@ -451,6 +695,12 @@ def _collect_boundary_collection_with_model(
     query_samples: list[QuerySample] = []
     output_targets: dict[tuple[int, int, int], list[float]] = {}
     probe_head_map = _resolve_probe_layer_heads(probe_layers, probe_heads, probe_layer_heads)
+    use_trace_prompt_capture = _can_use_qwen35_trace_prompt_capture(model)
+    trace_layer_heads = tuple(
+        (int(layer_index), int(head_index))
+        for layer_index, layer_probe_heads in sorted(probe_head_map.items())
+        for head_index in layer_probe_heads
+    )
     past_key_values = None
     processed_token_count = 0
 
@@ -480,26 +730,46 @@ def _collect_boundary_collection_with_model(
                 )
 
         capture_token_ids = full_input_ids[:, capture_start:capture_end]
-        with torch.inference_mode():
-            capture_outputs = model(
-                input_ids=capture_token_ids,
-                past_key_values=past_key_values,
-                use_cache=True,
-                return_dict=True,
-                output_hidden_states=True,
-                output_attentions=True,
+        trace_buffer = None
+        patch_context = nullcontext()
+        capture_kwargs = {
+            "input_ids": capture_token_ids,
+            "past_key_values": past_key_values,
+            "use_cache": True,
+            "return_dict": True,
+        }
+        if use_trace_prompt_capture:
+            trace_buffer = AttentionTraceChunkBuffer(
+                capacity=max(1, len(trace_layer_heads) * max(1, capture_end - capture_start)),
+                query_length=max(1, capture_end - capture_start),
             )
+            patch_context = _patched_qwen35_attention_trace_chunk(trace_layer_heads, trace_buffer)
+        else:
+            capture_kwargs["output_hidden_states"] = True
+            capture_kwargs["output_attentions"] = True
+        with torch.inference_mode():
+            with patch_context:
+                capture_outputs = model(**capture_kwargs)
 
         for query_position, capture_index in enumerate(range(capture_start, capture_end)):
             source_turn_id, source_speaker = _turn_for_token_index(capture_index, turn_spans)
-            for row in _build_capture_rows(
-                model=model,
-                outputs=capture_outputs,
-                token_index=capture_index,
-                query_position=query_position,
-                config=config,
-                probe_head_map=probe_head_map,
-            ):
+            rows = (
+                _build_capture_rows_from_trace_payload(
+                    trace_payload=(trace_buffer.snapshot_for_query_position(query_position) if trace_buffer is not None else None),
+                    token_index=capture_index,
+                    config=config,
+                )
+                if use_trace_prompt_capture
+                else _build_capture_rows(
+                    model=model,
+                    outputs=capture_outputs,
+                    token_index=capture_index,
+                    query_position=query_position,
+                    config=config,
+                    probe_head_map=probe_head_map,
+                )
+            )
+            for row in rows:
                 observations.append(
                     FeatureObservation(
                         token_index=capture_index,

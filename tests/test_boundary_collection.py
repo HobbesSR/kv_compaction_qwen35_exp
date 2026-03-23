@@ -3,11 +3,16 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import torch
+
 from kv_compaction_qwen35_clean.boundary_collection import (
+    AttentionTraceChunkBuffer,
+    _build_capture_rows_from_trace_payload,
     load_boundary_collection,
     select_long_context_capture_indices,
     write_boundary_collection,
 )
+from kv_compaction_qwen35_clean.config import load_config
 from kv_compaction_qwen35_clean.data_types import (
     BoundaryCollection,
     FeatureHarvest,
@@ -132,3 +137,44 @@ def test_write_boundary_collection_rejects_runtime_cache(tmp_path: Path) -> None
         assert "runtime_cache" in str(exc)
     else:  # pragma: no cover
         raise AssertionError("Expected runtime_cache serialization to fail.")
+
+
+def test_attention_trace_chunk_buffer_roundtrip() -> None:
+    buffer = AttentionTraceChunkBuffer(capacity=4, query_length=2)
+    buffer.add_query_position(
+        query_position=0,
+        layer_indices=torch.tensor([3, 7], dtype=torch.long),
+        head_indices=torch.tensor([0, 7], dtype=torch.long),
+        prefix_mass_shares=torch.tensor([0.25, 0.75], dtype=torch.float32),
+        raw_query_vectors=torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32),
+        raw_outputs=torch.tensor([[5.0, 6.0], [7.0, 8.0]], dtype=torch.float32),
+    )
+
+    payload = buffer.snapshot_for_query_position(0)
+
+    assert payload is not None
+    assert payload["layer_indices"].tolist() == [3, 7]
+    assert payload["head_indices"].tolist() == [0, 7]
+    assert payload["raw_outputs"].tolist() == [[5.0, 6.0], [7.0, 8.0]]
+
+
+def test_build_capture_rows_from_trace_payload() -> None:
+    config = load_config("configs/qwen35_smoke/qwen3_5_9b.yaml")
+    rows = _build_capture_rows_from_trace_payload(
+        trace_payload={
+            "layer_indices": torch.tensor([3], dtype=torch.long),
+            "head_indices": torch.tensor([7], dtype=torch.long),
+            "prefix_mass_shares": torch.tensor([0.5], dtype=torch.float32),
+            "raw_query_vectors": torch.tensor([[1.0, 2.0, 3.0]], dtype=torch.float32),
+            "raw_outputs": torch.tensor([[4.0, 5.0, 6.0]], dtype=torch.float32),
+        },
+        token_index=255,
+        config=config,
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["layer"] == 3
+    assert rows[0]["head"] == 7
+    assert rows[0]["raw_prefix_mass"] == 127.5
+    assert len(rows[0]["query_projection"]) == config.feature_schema.query_projection_dim
+    assert len(rows[0]["output_projection"]) == config.feature_schema.output_projection_dim

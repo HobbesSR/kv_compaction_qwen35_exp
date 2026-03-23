@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from kv_compaction_qwen35_clean.boundary_collection import (
@@ -12,12 +13,14 @@ from kv_compaction_qwen35_clean.context_loader import load_context_sample
 
 def main() -> None:
     config = load_config("configs/qwen35_smoke/qwen3_5_9b.yaml")
+    collection_config = replace(config, model=replace(config.model, attn_implementation="eager"))
     sample = load_context_sample(config)
     bundle = collect_teacher_forced_boundary_collection(
         sample,
-        config,
+        collection_config,
         materialize_boundary_kv=False,
     )
+    bundle = replace(bundle, runtime_cache=None)
     output_path = Path("artifacts/qwen35_smoke/boundary_collection.json")
     write_boundary_collection(bundle, output_path)
     print(output_path)
