@@ -13,6 +13,8 @@ dependencies = ["PyYAML>=6"]
 kv-qwen35-smoke = "kv_compaction_qwen35_clean.cli:run_smoke_eval"
 kv-qwen35-demo = "kv_compaction_qwen35_clean.cli:run_service_demo"
 kv-qwen35-export-examples = "kv_compaction_qwen35_clean.cli:export_example_summaries"
+kv-qwen35-proxy = "kv_compaction_qwen35_clean.qwen35_openai_proxy:main"
+kv-qwen35-roo-lite = "kv_compaction_qwen35_clean.roo_lite_agent:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

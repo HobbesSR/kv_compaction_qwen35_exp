@@ -101,13 +101,20 @@ The repo currently prefers:
 
 ## Current Limits
 
-The current demonstrated run does not yet show sketch beating the explicit
-control path. On the validated Qwen3.5-9B run, control matches reference at
-`4/4` while sketch drops to `2/4`.
+The current demonstrated run shows the sketch matching reference on the native
+smoke surface while the explicit control path still drops one prompt:
 
-This repo also does not package the research repo's separate low-overhead live
-generation observer result. The public story here is narrower:
+- reference: `4/4`
+- sketch: `4/4`
+- control: `3/4`
+
+This repo still does not package the research repo's separate low-overhead
+live generation observer result. The public story here is narrower:
 
 - boundary-triggered compaction
 - teacher-forced boundary evidence
 - sketch vs explicit control on a Qwen3.5-native smoke surface
+
+It also does not claim that the current checked-in runtimes are an optimized
+deployment baseline. The quality story is now stable; the remaining work is on
+systems polish and broader-surface validation.

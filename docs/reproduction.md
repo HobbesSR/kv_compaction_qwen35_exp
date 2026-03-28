@@ -24,6 +24,8 @@ This installs the console entry points:
 - `kv-qwen35-smoke`
 - `kv-qwen35-demo`
 - `kv-qwen35-export-examples`
+- `kv-qwen35-proxy`
+- `kv-qwen35-roo-lite`
 
 ## Smoke Result
 
@@ -41,16 +43,16 @@ Output artifact:
 Current observed local summary on the default `Qwen/Qwen3.5-9B` config:
 
 - reference:
-  - runtime: `53.494985s`
+  - runtime: `41.118896s`
   - central details preserved: `4/4`
   - hallucination runs: `0`
 - sketch:
-  - runtime: `61.673165s`
+  - runtime: `10.926923s`
   - central details preserved: `4/4`
   - hallucination runs: `0`
   - effective compact tokens: `128`
 - control:
-  - runtime: `50.569344s`
+  - runtime: `10.864395s`
   - central details preserved: `3/4`
   - hallucination runs: `0`
   - effective compact tokens: `128`
@@ -59,6 +61,32 @@ These are the current local demonstration numbers, not paper claims.
 
 The smoke command uses `k=8` because that is the current validated best
 artifact. The interactive service demo remains on a cheaper `k=6` setup.
+
+## Proxy And Roo-Lite
+
+These commands are intentionally separate from the clean smoke claim. They use
+the same Qwen3.5 runtime surface but exercise a service-shaped endpoint and a
+minimal local tool agent.
+
+Run the OpenAI-compatible proxy:
+
+```bash
+cd qwen35_clean
+kv-qwen35-proxy --config configs/qwen35_smoke/qwen3_5_9b.yaml --port 8010
+```
+
+Run the minimal tool agent against a running proxy:
+
+```bash
+cd qwen35_clean
+kv-qwen35-roo-lite \
+  --base-url http://127.0.0.1:8010/v1 \
+  --model Qwen/Qwen3.5-9B
+```
+
+The service/agent track is documented in:
+
+- `docs/roo_proxy_experiment.md`
 
 ## Service Demo
 
@@ -107,3 +135,8 @@ To refresh the checked-in summaries after a validated local run:
 cd qwen35_clean
 kv-qwen35-export-examples
 ```
+
+The curated checked-in summaries live under:
+
+- `examples/qwen35_smoke/behavioral_eval_summary.json`
+- `examples/qwen35_smoke/service_demo_summary.json`

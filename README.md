@@ -43,6 +43,23 @@ branch. It is a parallel story with shared protocol and separate calibration.
 - Qwen3.5-native calibration first, parity claims second
 - one clean story first, variants later
 
+## Partitioning
+
+This repo now owns two distinct but related Qwen3.5 tracks:
+
+1. `qwen35_smoke_v1`
+   - the clean compaction-validation surface
+   - native Qwen3.5 smoke evals, summaries, and reproduction docs
+2. `qwen35_service_experiments`
+   - the OpenAI-compatible local proxy
+   - segment cache canonicalization and bundle storage
+   - the minimal Roo-lite tool harness
+
+The service/tooling track lives here because it is Qwen3.5-specific and uses
+the same tokenizer/template/runtime assumptions as the smoke lane. It should
+not be read as part of the clean smoke claim unless a document explicitly says
+so.
+
 ## Current State
 
 This repo has the first real Qwen3.5 substrate in place:
@@ -70,9 +87,9 @@ Operational note:
   interactive demo: smoke runs at `k=8`, while the service demo remains at
   `k=6` for a cheaper interactive path
 
-The current validated artifact still lives in `clean_repo/` for Qwen2.5. The
-job here is to build the analogous Qwen3.5 lane without coupling the two
-implementation surfaces.
+The sibling `clean_repo/` repository is the separate Qwen2.5 clean lane. The
+job here is to keep the analogous Qwen3.5 lane self-contained rather than
+coupling the two implementation surfaces.
 
 ## Current Demonstrated Result
 
@@ -101,6 +118,8 @@ the repo exposes:
 - `kv-qwen35-smoke`
 - `kv-qwen35-demo`
 - `kv-qwen35-export-examples`
+- `kv-qwen35-proxy`
+- `kv-qwen35-roo-lite`
 
 See:
 
@@ -109,3 +128,9 @@ See:
 - [docs/architecture.md](./docs/architecture.md)
 - [docs/results.md](./docs/results.md)
 - [docs/reproduction.md](./docs/reproduction.md)
+- [docs/roo_proxy_experiment.md](./docs/roo_proxy_experiment.md)
+
+Checked-in example summaries:
+
+- [examples/qwen35_smoke/behavioral_eval_summary.json](./examples/qwen35_smoke/behavioral_eval_summary.json)
+- [examples/qwen35_smoke/service_demo_summary.json](./examples/qwen35_smoke/service_demo_summary.json)

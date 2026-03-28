@@ -27,25 +27,28 @@ surface, but not yet enough to claim a speed-optimized implementation.
 
 ## Current Demonstrated Output
 
-Smoke summary (artifact: `behavioral_eval_qwen35_calibration_v3_k8_t40_h0bankfix.json`):
+Smoke summary (checked-in summary:
+`examples/qwen35_smoke/behavioral_eval_summary.json`):
 
 - prompt set: `qwen35_calibration_v3`
 - keys per head: `8`
 - key selection: `highest_attention`
 - reference:
-  - runtime: `53.49s`
+  - runtime: `41.118896s`
   - central details preserved: `4/4`
   - hallucination runs: `0`
 - sketch:
-  - runtime: `61.67s`
+  - runtime: `10.926923s`
   - central details preserved: `4/4`
   - hallucination runs: `0`
   - effective compact tokens: `128`
+  - compacted heads: `16`
 - control:
-  - runtime: `58.43s`
+  - runtime: `10.864395s`
   - central details preserved: `3/4`
   - hallucination runs: `0`
   - effective compact tokens: `128`
+  - compacted heads: `16`
 
 Service demo summary:
 
@@ -84,10 +87,11 @@ The `source_turn_id` field in `PrototypeEntry` was retained for diagnostics.
 ## Where These Numbers Live
 
 - regenerable local artifacts:
-  - `artifacts/qwen35_smoke/behavioral_eval_qwen35_calibration_v3_k8_t40_h0bankfix.json`
-  - `artifacts/qwen35_smoke/behavioral_eval_qwen35_calibration_v3_k6_t40_h0bankfix.json`
+  - `artifacts/qwen35_smoke/behavioral_eval_qwen35_calibration_v3_k8_t40.json`
   - `artifacts/qwen35_smoke/service_demo_summary.json`
-  - `artifacts/qwen35_smoke/reference_calibration_qwen35_calibration_v3_t40.json`
+- checked-in summary outputs:
+  - `examples/qwen35_smoke/behavioral_eval_summary.json`
+  - `examples/qwen35_smoke/service_demo_summary.json`
 
 ## Non-Claims
 

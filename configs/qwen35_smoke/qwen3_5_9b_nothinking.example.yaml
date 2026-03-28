@@ -1,0 +1,85 @@
+experiment:
+  name: qwen35_smoke_qwen3_5_9b_nothinking
+  seed: 7
+  paper: attention_matching_2026
+
+model:
+  name: qwen3.5-9b
+  provider: huggingface
+  huggingface_id: Qwen/Qwen3.5-9B
+  tokenizer_name: Qwen/Qwen3.5-9B
+  device: cuda
+  dtype: bfloat16
+  attn_implementation: sdpa
+  trust_remote_code: false
+  local_files_only: false
+  max_context_tokens: 8192
+  prefill_chunk_size: 1024
+  probe_max_tokens: 256
+  logical_kv_length: preserve
+  enable_thinking: false
+
+data:
+  dataset: local_placeholder_qwen35
+  context_tokens: 8192
+  branch_switch_probe: true
+  chunking:
+    enabled: true
+    mode: kv
+    chunk_size: 4096
+  branch_switch:
+    primary_prompt_label: continue_original_task
+    primary_prompt_template: Continue the original task using the same context and the current working state.
+    alternate_prompt_label: retrieve_different_details
+    alternate_prompt_template: Using the same context, answer a different question that requires retrieving details not emphasized by the original continuation.
+    description: After compaction at a boundary, evaluate both continuation under the original next-task prompt and an alternate prompt over the same context requiring retrieval of different details
+
+compaction:
+  boundary: prompt
+  strategy: sketch_coreset
+  target_compression_ratio: 10.0
+  preserved_tail_tokens: 1024
+  fit_beta: true
+  fit_values: true
+  key_selection: highest_attention
+  head_budget: uniform
+
+feature_schema:
+  granularity: per_head
+  projection_source: frozen_random_projection
+  query_projection_dim: 32
+  output_projection_dim: 32
+  mass_measure: normalized_prefix_mass_share
+  auxiliary_mass_metric: raw_prefix_mass
+  output_summary: projected_prefix_local_output
+  tap_point: post_query_pre_head_merge
+
+sketch:
+  kind: prototype_bank
+  max_prototypes: 16
+  update_rule: mass_gated_exponential_decay
+  similarity_metric: cosine
+  merge_threshold: 0.85
+  forgetting_factor: 0.995
+  min_prefix_mass: 0.05
+  novelty_weight: 0.25
+  residual_weight: 0.5
+
+reference_queries:
+  primary_source: sketch_coreset
+  compare_sources:
+    - sketch_coreset
+    - teacher_forced_context
+    - repeat_prefill
+  max_queries_per_head: 4096
+
+baselines:
+  - teacher_forced_subsample
+  - repeat_prefill_subsample
+  - highest_attention_no_fit
+
+metrics:
+  - qa_accuracy
+  - reconstruction_nll
+  - branch_switch_accuracy
+  - boundary_compaction_seconds
